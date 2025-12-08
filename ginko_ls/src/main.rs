@@ -1,7 +1,6 @@
 use clap::Parser;
+use ginko_server::Backend;
 use tower_lsp::{LspService, Server};
-
-mod server;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -21,6 +20,6 @@ pub async fn main() {
 
     let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
 
-    let (service, socket) = LspService::new(server::Backend::new);
+    let (service, socket) = LspService::new(Backend::new);
     Server::new(stdin, stdout, socket).serve(service).await;
 }

@@ -12,7 +12,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 use url::Url;
 
-pub(crate) struct Backend {
+pub struct Backend {
     client: Client,
     project: RwLock<Project>,
     severities: SeverityMap,
@@ -58,6 +58,14 @@ fn lsp_pos_from_pos(pos: ginko::dts::Position) -> Position {
 }
 
 impl Backend {
+    pub fn with_loader<L>(mut self, loader: L) -> Self
+    where
+        L: IncludeLoader + Send + 'static,
+    {
+        self.loader = RwLock::new(IncludeLoaderGuard::new(loader));
+        self
+    }
+
     fn lsp_diag_from_diag(&self, diagnostic: &ginko::dts::Diagnostic) -> Diagnostic {
         let span = diagnostic.span();
         Diagnostic {
