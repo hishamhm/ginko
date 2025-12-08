@@ -20,6 +20,6 @@ pub async fn main() {
 
     let (stdin, stdout) = (tokio::io::stdin(), tokio::io::stdout());
 
-    let (service, socket) = LspService::new(Backend::new);
+    let (service, socket) = LspService::new(|client| Backend::new("ginko_ls", client));
     Server::new(stdin, stdout, socket).serve(service).await;
 }

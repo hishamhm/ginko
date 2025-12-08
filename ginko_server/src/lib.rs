@@ -13,6 +13,7 @@ use tower_lsp::{Client, LanguageServer};
 use url::Url;
 
 pub struct Backend {
+    name: String,
     client: Client,
     project: RwLock<Project>,
     severities: SeverityMap,
@@ -20,8 +21,9 @@ pub struct Backend {
 }
 
 impl Backend {
-    pub fn new(client: Client) -> Backend {
+    pub fn new(name: &str, client: Client) -> Backend {
         Backend {
+            name: name.to_string(),
             client,
             project: RwLock::new(Project::default()),
             severities: SeverityMap::default(),
@@ -75,7 +77,7 @@ impl Backend {
             severity: Some(lsp_severity_from_severity(
                 diagnostic.severity(&self.severities),
             )),
-            source: Some("ginko_ls".to_string()),
+            source: Some(self.name.clone()),
             ..Default::default()
         }
     }
