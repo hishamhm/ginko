@@ -6,10 +6,10 @@ use std::sync::Arc;
 ///
 /// * `FileType::DtSource`: Plain device-tree source files. Usually ends with `.dts`
 /// * `FileType::DtSourceInclude`: Device-tree source include files.
-///     Usually included by device-tree files and ends with `.dtsi`
+///   Usually included by device-tree files and ends with `.dtsi`
 /// * `FileType::DtSourceOverlay`: Device-tree source overlay files.
-///     Usually built as standalone and uses references to define where an overlay should be applied.
-///     Usually, these files end with `.dtso`
+///   Usually built as standalone and uses references to define where an overlay should be applied.
+///   Usually, these files end with `.dtso`
 /// * `FileType::Unknown`: Unknown file type.
 #[derive(Clone, Copy, Eq, PartialEq, Default, Debug)]
 pub enum FileType {
@@ -125,12 +125,12 @@ impl Position {
     pub fn offset_by_char(&self, count: i32) -> Position {
         Position::new(
             self.line,
-            self.character.checked_add_signed(count).expect(
-                &format!(
+            self.character.checked_add_signed(count).unwrap_or_else(|| {
+                panic!(
                     "[offset_by_char] Illegal position reached. self: {}, count: {}",
                     self, count
-                )[..],
-            ),
+                )
+            }),
         )
     }
 
