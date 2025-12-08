@@ -1,4 +1,4 @@
-use ginko::dts::Project;
+use ginko::dts::{IncludeLoaderGuard, Project};
 use itertools::Itertools;
 use std::path::PathBuf;
 
@@ -16,11 +16,16 @@ fn check_no_diagnostics(project: &Project) {
 #[test]
 fn no_diagnostics_for_simple_file() {
     let mut project = Project::default();
+    let mut loader = IncludeLoaderGuard::default();
+
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut file_name = path.clone();
     file_name.push("tests/simple.dts");
     project
-        .add_file(file_name.into_os_string().into_string().unwrap())
+        .add_file(
+            file_name.into_os_string().into_string().unwrap(),
+            &mut loader,
+        )
         .expect("File should be present");
     check_no_diagnostics(&project);
 }
@@ -28,16 +33,24 @@ fn no_diagnostics_for_simple_file() {
 #[test]
 fn no_diagnostics_for_file_with_delete_node() {
     let mut project = Project::default();
+    let mut loader = IncludeLoaderGuard::default();
+
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let mut file_name = path.clone();
     file_name.push("tests/test_delete_syntax_A.dts");
     project
-        .add_file(file_name.into_os_string().into_string().unwrap())
+        .add_file(
+            file_name.into_os_string().into_string().unwrap(),
+            &mut loader,
+        )
         .expect("File should be present");
     let mut file_name = path.clone();
     file_name.push("tests/test_delete_syntax_B.dts");
     project
-        .add_file(file_name.into_os_string().into_string().unwrap())
+        .add_file(
+            file_name.into_os_string().into_string().unwrap(),
+            &mut loader,
+        )
         .expect("File should be present");
     check_no_diagnostics(&project);
 }

@@ -5,6 +5,7 @@ use crate::dts::ast::{
 use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
 use crate::dts::import_guard::ImportGuard;
+use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::{Diagnostic, FileType, Position, Project};
 use std::collections::HashMap;
 use std::path::{Path as StdPath, PathBuf};
@@ -23,12 +24,14 @@ enum Labeled {
 /// This struct only takes care of identifying cyclic dependencies, but
 pub(crate) struct Analysis {
     import_guard: ImportGuard<PathBuf>,
+    loader: IncludeLoaderGuard,
 }
 
 impl Analysis {
-    pub fn new() -> Analysis {
+    pub fn new(loader: &IncludeLoaderGuard) -> Analysis {
         Analysis {
             import_guard: ImportGuard::default(),
+            loader: loader.clone(),
         }
     }
 }
@@ -172,7 +175,7 @@ impl Analysis {
     }
 
     fn analyze_include(&mut self, ctx: &mut FileContext<'_>, parent: &DtsFile, include: &Include) {
-        let path = match include.path() {
+        let path = match self.loader.load(&parent.source, &include.file_name()) {
             Ok(path) => path,
             Err(err) => {
                 ctx.add_diagnostic(Diagnostic::io_error(include.span(), include.source(), err));

@@ -1,5 +1,6 @@
 use crate::dts::analysis::{Analysis, AnalysisContext, AnalysisResult};
 use crate::dts::data::HasSource;
+use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::{ByteReader, Reader};
 use crate::dts::tokens::{Lexer, Token};
 use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserContext, Position, Project, Span};
@@ -115,7 +116,8 @@ impl Code {
     pub fn get_analyzed_file(&self) -> (Vec<Diagnostic>, AnalysisContext) {
         let (file, mut parse_diagnostics) = self.parse_ok(Parser::file);
         let fake_project = Project::default();
-        let mut analysis = Analysis::new();
+        let loader = IncludeLoaderGuard::default();
+        let mut analysis = Analysis::new(&loader);
         let AnalysisResult {
             context,
             mut diagnostics,

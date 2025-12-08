@@ -1,5 +1,5 @@
 use clap::Parser;
-use ginko::dts::{DiagnosticPrinter, Project, SeverityMap};
+use ginko::dts::{DiagnosticPrinter, IncludeLoaderGuard, Project, SeverityMap};
 use itertools::Itertools;
 use std::error::Error;
 use std::process::exit;
@@ -15,9 +15,10 @@ struct Args {
 fn main() -> Result<(), Box<dyn Error>> {
     let args = Args::parse();
     let mut project = Project::default();
+    let mut loader = IncludeLoaderGuard::default();
 
-    project.set_include_paths(args.include.unwrap_or_default());
-    project.add_file(args.file)?;
+    loader.set_include_paths(args.include.unwrap_or_default());
+    project.add_file(args.file, &mut loader)?;
 
     let mut has_errors = false;
     for file in project.project_files() {

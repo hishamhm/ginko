@@ -732,7 +732,6 @@ where
                 Ok(Primary::Directive(AnyDirective::Include(Include {
                     include_token,
                     file_name: WithToken::new(path, string_tok.clone()),
-                    include_paths: self.context.include_paths.clone(),
                 })))
             }
             TokenKind::Slash => {

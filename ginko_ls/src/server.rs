@@ -1,6 +1,6 @@
 use ginko::dts::{
-    AnyDirective, FileType, HasSpan, ItemAtCursor, Node, NodeItem, NodePayload, Primary, Project,
-    Severity, SeverityMap, Span,
+    AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, ItemAtCursor, Node,
+    NodeItem, NodePayload, Primary, Project, Severity, SeverityMap, Span,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -16,6 +16,7 @@ pub(crate) struct Backend {
     client: Client,
     project: RwLock<Project>,
     severities: SeverityMap,
+    loader: RwLock<IncludeLoaderGuard>,
 }
 
 impl Backend {
@@ -24,6 +25,7 @@ impl Backend {
             client,
             project: RwLock::new(Project::default()),
             severities: SeverityMap::default(),
+            loader: RwLock::new(IncludeLoaderGuard::default()),
         }
     }
 }
@@ -110,7 +112,7 @@ impl Backend {
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         let config = ProjectConfig::from_value(params.initialization_options.unwrap_or_default());
-        self.project.write().set_include_paths(config.includes);
+        self.loader.write().set_include_paths(config.includes);
 
         Ok(InitializeResult {
             server_info: None,
@@ -128,7 +130,7 @@ impl LanguageServer for Backend {
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
         let config = ProjectConfig::from_value(params.settings);
-        self.project.write().set_include_paths(config.includes);
+        self.loader.write().set_include_paths(config.includes);
         self.publish_diagnostics().await
     }
 
@@ -147,6 +149,7 @@ impl LanguageServer for Backend {
             file_path.clone(),
             params.text_document.text,
             file_type,
+            &mut self.loader.write(),
         );
         self.publish_diagnostics().await
     }
@@ -160,6 +163,7 @@ impl LanguageServer for Backend {
             file_path.clone(),
             params.content_changes.into_iter().next().unwrap().text,
             file_type,
+            &mut self.loader.write(),
         );
         self.publish_diagnostics().await
     }
@@ -199,8 +203,10 @@ impl LanguageServer for Backend {
                 }
             }
             ItemAtCursor::Include(include) => {
-                match include
-                    .path()
+                match self
+                    .loader
+                    .write()
+                    .load(&file_path, &include.file_name())
                     .ok()
                     .and_then(|path| Url::from_file_path(path).ok())
                 {

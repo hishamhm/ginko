@@ -2,6 +2,7 @@ use crate::dts::analysis::{Analysis, AnalysisContext};
 use crate::dts::ast::{DtsFile, Include, Reference};
 use crate::dts::data::HasSource;
 use crate::dts::error_codes::SeverityMap;
+use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::ByteReader;
 use crate::dts::tokens::Lexer;
 use crate::dts::visitor::ItemAtCursor;
@@ -79,18 +80,15 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn set_include_paths(&mut self, include_paths: Vec<String>) {
-        self.include_paths = include_paths
-            .iter()
-            .map(|path| dunce::canonicalize(path).unwrap_or_default())
-            .collect::<Vec<PathBuf>>();
-    }
-
-    pub fn add_file(&mut self, file_name: String) -> Result<(), io::Error> {
+    pub fn add_file(
+        &mut self,
+        file_name: String,
+        loader: &mut IncludeLoaderGuard,
+    ) -> Result<(), io::Error> {
         let file_name = dunce::canonicalize(file_name)?;
         let content = fs::read_to_string(file_name.clone())?;
         let file_ending = FileType::from(file_name.as_path());
-        self.add_file_with_text(file_name, content, file_ending);
+        self.add_file_with_text(file_name, content, file_ending, loader);
         Ok(())
     }
 
@@ -105,15 +103,21 @@ impl Project {
     ///
     /// # Panics
     /// If `file_name` does not point to a valid file.
-    pub fn add_file_with_text(&mut self, file_name: PathBuf, text: String, file_type: FileType) {
+    pub fn add_file_with_text(
+        &mut self,
+        file_name: PathBuf,
+        text: String,
+        file_type: FileType,
+        loader: &mut IncludeLoaderGuard,
+    ) {
         let file_name = dunce::canonicalize(file_name).expect("File must be present");
         // First step: Parse file and all dependencies.
         // Dependencies are cached.
-        self.parse_file(file_name.clone(), text, file_type);
+        self.parse_file(file_name.clone(), text, file_type, loader);
 
-        let keys = self.compute_key_order();
+        let keys = self.compute_key_order(loader);
 
-        let mut analysis = Analysis::new();
+        let mut analysis = Analysis::new(loader);
         for key in &keys {
             let proj_file = self.files.get(key).unwrap();
             let result = if let Some(file) = &proj_file.file {
@@ -129,7 +133,7 @@ impl Project {
 
     /// Computes the order in which files must be analyzed.
     /// inefficient at the moment at O(n^3)
-    fn compute_key_order(&self) -> Vec<PathBuf> {
+    fn compute_key_order(&mut self, loader: &mut IncludeLoaderGuard) -> Vec<PathBuf> {
         let mut map: HashMap<_, Vec<_>> = HashMap::new();
         for (path, file) in &self.files {
             let Some(dts_file) = &file.file else { continue };
@@ -138,7 +142,7 @@ impl Project {
                 .elements
                 .iter()
                 .filter_map(|el| el.as_include())
-                .map(|incl| incl.path())
+                .map(|incl| loader.load(path, &incl.file_name()))
                 .collect_vec();
             for include in includes.into_iter().flatten() {
                 map.entry(include).or_default().push(path.clone())
@@ -207,10 +211,7 @@ impl Project {
     }
 
     pub fn find_at_pos<'a>(&'a self, path: &Path, position: &Position) -> Option<ItemAtCursor<'a>> {
-        let file = match self.get_file(path).and_then(|file| file.file.as_ref()) {
-            None => return None,
-            Some(file) => file,
-        };
+        let file = self.get_file(path).and_then(|file| file.file.as_ref())?;
         file.item_at_cursor(position)
     }
 
@@ -237,7 +238,13 @@ impl Project {
         }
     }
 
-    fn parse_file(&mut self, file_name: PathBuf, text: String, file_type: FileType) {
+    fn parse_file(
+        &mut self,
+        file_name: PathBuf,
+        text: String,
+        file_type: FileType,
+        loader: &mut IncludeLoaderGuard,
+    ) {
         let reader = ByteReader::from_string(text.clone());
         let lexer = Lexer::new(reader, file_name.clone().into());
         // add the file's directory to the include paths to allow local includes
@@ -253,7 +260,14 @@ impl Project {
                 file.elements
                     .iter()
                     .filter_map(|primary| primary.as_include())
-                    .for_each(|include| self.parse_included_file(&mut parser.diagnostics, include));
+                    .for_each(|include| {
+                        self.parse_included_file(
+                            &mut parser.diagnostics,
+                            &file.source,
+                            include,
+                            loader,
+                        )
+                    });
                 self.files.insert(
                     file_name,
                     ProjectFile::parsed(parser.diagnostics, file, file_type, text),
@@ -266,8 +280,14 @@ impl Project {
         };
     }
 
-    fn parse_included_file(&mut self, diagnostics: &mut Vec<Diagnostic>, include: &Include) {
-        let canonicalized_path = match include.path() {
+    fn parse_included_file(
+        &mut self,
+        diagnostics: &mut Vec<Diagnostic>,
+        parent: &Path,
+        include: &Include,
+        loader: &mut IncludeLoaderGuard,
+    ) {
+        let canonicalized_path = match loader.load(parent, &include.file_name()) {
             Ok(path) => path,
             Err(err) => {
                 diagnostics.push(Diagnostic::io_error(include.span(), include.source(), err));
@@ -281,7 +301,7 @@ impl Project {
         match fs::read_to_string(&canonicalized_path) {
             Ok(text) => {
                 let typ = FileType::from(canonicalized_path.as_path());
-                self.parse_file(canonicalized_path, text, typ);
+                self.parse_file(canonicalized_path, text, typ, loader);
             }
             Err(err) => {
                 diagnostics.push(Diagnostic::io_error(include.span(), include.source(), err))
@@ -302,6 +322,7 @@ impl Project {
 #[cfg(not(windows))]
 mod tests {
     use crate::dts::error_codes::ErrorCode;
+    use crate::dts::loader::IncludeLoaderGuard;
     use crate::dts::test::Code;
     use crate::dts::tokens::TokenKind;
     use crate::dts::{ast, Diagnostic, HasSpan, ItemAtCursor, Project};
@@ -347,10 +368,14 @@ mod tests {
     #[test]
     pub fn file_with_includes() {
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
         let temp_dir = TempDir::new();
         let (_, path1) = temp_dir.add_file("tests-include.dtsi", "");
         project
-            .add_file(path1.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                path1.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Cannot add file");
 
         let (_, file2) = temp_dir.add_file(
@@ -365,7 +390,10 @@ mod tests {
             ),
         );
         project
-            .add_file(file2.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file2.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Cannot add file");
         assert!(project.get_file(&path1).is_some());
         assert!(project.get_file(&file2).is_some());
@@ -379,6 +407,7 @@ mod tests {
     #[test]
     pub fn cross_file_references() {
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
         let temp_dir = TempDir::new();
         let (code1, file1) = temp_dir.add_file(
             "tests-include.dtsi",
@@ -409,7 +438,10 @@ mod tests {
         );
 
         project
-            .add_file(file2.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file2.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Unexpected IO error");
 
         project.assert_no_diagnostics();
@@ -464,8 +496,10 @@ mod tests {
         write!(file2, r#"/include/ "{}""#, path1.display()).expect("Cannot write to file1");
 
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
         project
-            .add_file(path1.into_os_string().into_string().unwrap())
+            .add_file(path1.into_os_string().into_string().unwrap(), &mut loader)
             .expect("Cannot add file to project");
 
         let diag = project.all_diagnostics().cloned().collect_vec();
@@ -485,14 +519,22 @@ mod tests {
     #[test]
     pub fn file_with_multiple_includes() {
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
         let temp_dir = TempDir::new();
         let (_, file1) = temp_dir.add_file("test1.dtsi", "");
         project
-            .add_file(file1.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file1.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Cannot add file");
         let (_, file2) = temp_dir.add_file("test2.dtsi", "");
         project
-            .add_file(file2.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file2.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Cannot add file");
         let (_, file3) = temp_dir.add_file(
             "test.dts",
@@ -509,7 +551,7 @@ mod tests {
         );
 
         project
-            .add_file(file3.into_os_string().into_string().unwrap())
+            .add_file(file3.into_os_string().into_string().unwrap(), &mut loader)
             .expect("Unexpected IO error");
         project.assert_no_diagnostics();
     }
@@ -517,6 +559,8 @@ mod tests {
     #[test]
     pub fn file_with_nested_includes() {
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
         let temp_dir = TempDir::new();
         let (_, file1) = temp_dir.add_file("tests-include1.dtsi", "");
         let (_, file2) = temp_dir.add_file(
@@ -536,7 +580,10 @@ mod tests {
         );
 
         project
-            .add_file(file3.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file3.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Unexpected IO error");
 
         project.assert_no_diagnostics();
@@ -549,6 +596,8 @@ mod tests {
     #[test]
     pub fn error_in_included_file_add_include_before_dts() {
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
         let temp_dir = TempDir::new();
         let (code1, file1) = temp_dir.add_file("error.dtsi", "/ {}"); // missing semicolon
         let (code2, file2) = temp_dir.add_file(
@@ -563,7 +612,10 @@ mod tests {
             ),
         );
         project
-            .add_file(file2.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file2.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Cannot add file to project");
 
         assert!(project.get_file(&file1).is_some());
@@ -612,15 +664,20 @@ mod tests {
         );
 
         let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
         let include_paths = vec![
             includes_dir.inner.path().display().to_string(),
             another_includes_dir.inner.path().display().to_string(),
         ];
 
-        project.set_include_paths(include_paths);
+        loader.set_include_paths(include_paths);
 
         project
-            .add_file(file3.clone().into_os_string().into_string().unwrap())
+            .add_file(
+                file3.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
             .expect("Unexpected IO error");
 
         project.assert_no_diagnostics();

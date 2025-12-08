@@ -3,9 +3,8 @@ use crate::dts::tokens::Token;
 use crate::dts::{HasSpan, Span};
 use itertools::Itertools;
 use std::fmt::{Display, Formatter, LowerHex};
-use std::io;
 use std::ops::Deref;
-use std::path::{Path as StdPath, PathBuf};
+use std::path::Path as StdPath;
 use std::sync::Arc;
 
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -449,7 +448,6 @@ impl Display for DtsFile {
 pub struct Include {
     pub include_token: Token,
     pub file_name: WithToken<String>,
-    pub include_paths: Vec<PathBuf>,
 }
 
 impl HasSpan for Include {
@@ -471,17 +469,8 @@ impl Display for Include {
 }
 
 impl Include {
-    pub fn path(&self) -> Result<PathBuf, io::Error> {
-        let include_resolved = self.include_paths.iter().find_map(|include_path| {
-            let path = include_path.join(self.file_name.to_string());
-            dunce::canonicalize(path).ok()
-        });
-
-        if let Some(include_resolved) = include_resolved {
-            Ok(include_resolved)
-        } else {
-            dunce::canonicalize(self.file_name.to_string())
-        }
+    pub fn file_name(&self) -> String {
+        self.file_name.to_string()
     }
 }
 
