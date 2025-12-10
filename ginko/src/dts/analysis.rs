@@ -68,6 +68,7 @@ impl AnalysisContext {
 }
 
 pub struct FileContext<'a> {
+    source: Arc<StdPath>,
     project: &'a Project,
     diagnostics: Vec<Diagnostic>,
     labels: HashMap<String, Labeled>,
@@ -111,6 +112,7 @@ impl Analysis {
         project: &Project,
     ) -> AnalysisResult {
         let mut ctx = FileContext {
+            source: file.source.clone(),
             file_type,
             labels: HashMap::default(),
             diagnostics: Vec::default(),
@@ -356,6 +358,7 @@ impl Analysis {
                 }
             }
             PropertyValue::Reference(reference) => self.analyze_reference(ctx, reference),
+            PropertyValue::Incbin(_, include, _) => self.analyze_incbin(ctx, include),
         }
     }
 
@@ -373,6 +376,12 @@ impl Analysis {
         reference: &WithToken<Reference>,
     ) {
         ctx.unresolved_references.push(reference.clone())
+    }
+
+    pub fn analyze_incbin(&mut self, ctx: &mut FileContext<'_>, include: &Include) {
+        if let Err(err) = self.loader.load(&ctx.source, &include.file_name()) {
+            ctx.add_diagnostic(Diagnostic::io_error(include.span(), include.source(), err));
+        }
     }
 }
 

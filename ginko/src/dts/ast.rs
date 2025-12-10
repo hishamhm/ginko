@@ -212,6 +212,7 @@ pub enum PropertyValue {
     Cells(Token, Vec<Cell>, Token),
     Reference(WithToken<Reference>),
     ByteStrings(Token, Vec<WithToken<Vec<u8>>>, Token),
+    Incbin(Token, Include, Token),
 }
 
 impl HasSpan for PropertyValue {
@@ -221,6 +222,7 @@ impl HasSpan for PropertyValue {
             PropertyValue::Cells(start, _, end) => start.start().to(end.end()),
             PropertyValue::Reference(reference) => reference.span(),
             PropertyValue::ByteStrings(start, _, end) => start.start().to(end.end()),
+            PropertyValue::Incbin(start, _, end) => start.start().to(end.end()),
         }
     }
 }
@@ -232,6 +234,7 @@ impl HasSource for PropertyValue {
             PropertyValue::Cells(start, ..) => start.source.clone(),
             PropertyValue::Reference(reference) => reference.token.source.clone(),
             PropertyValue::ByteStrings(start, ..) => start.source.clone(),
+            PropertyValue::Incbin(start, ..) => start.source.clone(),
         }
     }
 }
@@ -264,6 +267,9 @@ impl Display for PropertyValue {
                     }
                 }
                 write!(f, "]")
+            }
+            PropertyValue::Incbin(_, incbin_path, _) => {
+                write!(f, "/incbin/(\"{incbin_path}\")")
             }
         }
     }

@@ -54,6 +54,7 @@ pub enum CompilerDirective {
     Bits,
     OmitIfNoRef,
     Include,
+    Incbin,
     Other(String),
 }
 
@@ -68,6 +69,7 @@ impl Display for CompilerDirective {
             CompilerDirective::Bits => write!(f, "/bits/"),
             CompilerDirective::OmitIfNoRef => write!(f, "/omit-if-no-ref/"),
             CompilerDirective::Include => write!(f, "/include/"),
+            CompilerDirective::Incbin => write!(f, "/incbin/"),
             CompilerDirective::Other(other) => write!(f, "/{other}/"),
         }
     }

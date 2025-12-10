@@ -346,6 +346,15 @@ where
         }
     }
 
+    fn expect_next_token(&mut self, kind: TokenKind) -> Result<Token> {
+        let tok = self.lexer.expect_next()?;
+        if tok.kind == kind {
+            Ok(tok)
+        } else {
+            Err(Diagnostic::expected(tok.span(), tok.source(), &[kind]))
+        }
+    }
+
     pub fn property_value(&mut self) -> Result<PropertyValue> {
         if matches!(
             self.lexer.peek(),
@@ -404,6 +413,29 @@ where
                 }
                 Ok(PropertyValue::ByteStrings(tok, byte_strings, end))
             }
+            TokenKind::Directive(CompilerDirective::Incbin) => {
+                let open_paren = self.expect_next_token(TokenKind::OpenParen)?;
+                let path = self.lexer.expect_next()?;
+                let string = if let TokenKind::String(string) = &path.kind {
+                    string.clone()
+                } else {
+                    return Err(Diagnostic::expected(
+                        path.span(),
+                        path.source(),
+                        &[TokenKind::String("".to_string())],
+                    ));
+                };
+                let close_paren = self.expect_next_token(TokenKind::CloseParen)?;
+
+                Ok(PropertyValue::Incbin(
+                    open_paren,
+                    Include {
+                        include_token: tok,
+                        file_name: WithToken::new(string, path),
+                    },
+                    close_paren,
+                ))
+            }
             _ => Err(Diagnostic::expected(
                 tok.span(),
                 tok.source(),
@@ -412,6 +444,7 @@ where
                     TokenKind::ChevronLeft,
                     TokenKind::Ref(Reference::Simple("".to_string())),
                     TokenKind::OpenBracket,
+                    TokenKind::Directive(CompilerDirective::Incbin),
                 ],
             )),
         }
@@ -787,7 +820,7 @@ where
 #[cfg(test)]
 mod test {
     use crate::dts::ast::{
-        Cell, DtsFile, Memreserve, Node, NodeItem, NodeName, NodePayload, Path, Property,
+        Cell, DtsFile, Include, Memreserve, Node, NodeItem, NodeName, NodePayload, Path, Property,
         PropertyValue, Reference, WithToken,
     };
     use crate::dts::data::HasSource;
@@ -979,6 +1012,22 @@ mod test {
                     WithToken::new(vec![0xCD], code.s1("CD").token()),
                 ],
                 code.s1("]").token(),
+            )
+        );
+    }
+
+    #[test]
+    pub fn incbin_properties() {
+        let code = Code::new("/incbin/(\"file\")");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Incbin(
+                code.s1("(").token(),
+                Include {
+                    include_token: code.s1("/").token(),
+                    file_name: WithToken::new("file".into(), code.s1("\"").token(),)
+                },
+                code.s1(")").token()
             )
         );
     }

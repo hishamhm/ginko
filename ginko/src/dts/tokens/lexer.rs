@@ -202,6 +202,7 @@ where
             "delete-node" => DeleteNode,
             "omit-if-no-ref" => OmitIfNoRef,
             "include" => Include,
+            "incbin" => Incbin,
             other => Other(other.into()),
         };
         Token {
