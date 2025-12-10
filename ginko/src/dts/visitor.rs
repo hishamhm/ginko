@@ -139,7 +139,7 @@ impl PropertyValue {
                 }
             }
             PropertyValue::ByteStrings(..) => None,
-            PropertyValue::Incbin(_, include, _) => Some(ItemAtCursor::Include(&include)),
+            PropertyValue::Incbin(_, include, _) => Some(ItemAtCursor::Include(include)),
         }
     }
 }
