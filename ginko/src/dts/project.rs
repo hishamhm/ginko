@@ -151,11 +151,13 @@ impl Project {
         // This is very inefficient. Probably there is a better way.
         let mut current_order = self.files.keys().cloned().collect_vec();
         for (key, value) in &map {
-            let key_idx = current_order.iter().position(|r| r == key).unwrap();
-            for v in value {
-                let value_idx = current_order.iter().position(|r| r == v).unwrap();
-                if key_idx > value_idx {
-                    current_order.swap(key_idx, value_idx)
+            if let Some(key_idx) = current_order.iter().position(|r| r == key) {
+                for v in value {
+                    if let Some(value_idx) = current_order.iter().position(|r| r == v) {
+                        if key_idx > value_idx {
+                            current_order.swap(key_idx, value_idx)
+                        }
+                    }
                 }
             }
         }
