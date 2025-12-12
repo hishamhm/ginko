@@ -305,7 +305,7 @@ where
         match ch {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => Some(self.ident_or_label(start_pos)),
             b'0'..=b'9' => Some(self.number(start_pos)),
-            b'&' => {
+            b'&' | b'$' => {
                 self.reader.skip();
                 self.path_or_reference(start_pos)
             }
