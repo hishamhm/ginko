@@ -171,6 +171,14 @@ where
                 WithToken::new(crate::dts::ast::Reference::Label(reference.clone()), token)
             }
             Reference::Path(path) => {
+                // TODO: for now we simply ignore relative path markers.
+                let stripped = path.strip_prefix("./");
+                let path = if let Some(rest) = stripped {
+                    rest
+                } else {
+                    path.as_str()
+                };
+
                 if path.is_empty() {
                     self.diagnostics.push(Diagnostic::from_token(
                         token.clone(),
@@ -178,7 +186,7 @@ where
                         "Path cannot be empty",
                     ));
                 }
-                let path = Path::from(path.as_str());
+                let path = Path::from(path);
                 for el in path.iter() {
                     self.check_is_node_name(token.span(), el);
                 }
