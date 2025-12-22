@@ -18,7 +18,9 @@ pub use ast::{AnyDirective, Node, NodeItem, NodePayload, Primary};
 pub use data::{FileType, HasSpan, Position, Span};
 pub use diagnostics::{Diagnostic, DiagnosticPrinter, Severity};
 pub use error_codes::{ErrorCode, SeverityMap};
-pub use loader::{DefaultIncludeLoader, IncludeLoader, IncludeLoaderGuard};
+pub use loader::{
+    DefaultIncludeLoader, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
+};
 pub use parser::Parser;
 pub use parser::ParserContext;
 pub use project::Project;
