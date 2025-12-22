@@ -62,6 +62,11 @@ impl ProjectFile {
             .chain(&self.analysis_diagnostics)
     }
 
+    pub fn clear_diagnostics(&mut self) {
+        self.parser_diagnostics.clear();
+        self.analysis_diagnostics.clear();
+    }
+
     pub fn has_errors(&self, severity_map: &SeverityMap) -> bool {
         self.diagnostics()
             .any(|diagnostic| diagnostic.severity(severity_map) == Severity::Error)
@@ -80,6 +85,13 @@ pub struct Project {
 }
 
 impl Project {
+    pub fn reset(&mut self, loader: &mut IncludeLoaderGuard) {
+        for file in self.files.values_mut() {
+            file.clear_diagnostics();
+        }
+        self.analyze_all_files(loader)
+    }
+
     pub fn add_file(
         &mut self,
         file_name: String,
@@ -115,20 +127,7 @@ impl Project {
         // Dependencies are cached.
         self.parse_file(file_name.clone(), text, file_type, loader);
 
-        let keys = self.compute_key_order(loader);
-
-        let mut analysis = Analysis::new(loader);
-        for key in &keys {
-            let proj_file = self.files.get(key).unwrap();
-            let result = if let Some(file) = &proj_file.file {
-                analysis.analyze_file(file, proj_file.file_type, self)
-            } else {
-                continue;
-            };
-            let proj_file = self.files.get_mut(key).unwrap();
-            proj_file.context = Some(result.context);
-            proj_file.analysis_diagnostics = result.diagnostics;
-        }
+        self.analyze_all_files(loader);
     }
 
     /// Computes the order in which files must be analyzed.
@@ -162,6 +161,22 @@ impl Project {
             }
         }
         current_order
+    }
+
+    fn analyze_all_files(&mut self, loader: &mut IncludeLoaderGuard) {
+        let keys = self.compute_key_order(loader);
+        let mut analysis = Analysis::new(loader);
+        for key in &keys {
+            let proj_file = self.files.get(key).unwrap();
+            let result = if let Some(file) = &proj_file.file {
+                analysis.analyze_file(file, proj_file.file_type, self)
+            } else {
+                continue;
+            };
+            let proj_file = self.files.get_mut(key).unwrap();
+            proj_file.context = Some(result.context);
+            proj_file.analysis_diagnostics = result.diagnostics;
+        }
     }
 
     pub fn remove_file(&mut self, path: &Path) {
