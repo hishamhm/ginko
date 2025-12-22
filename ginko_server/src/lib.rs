@@ -1,12 +1,12 @@
 use ginko::dts::{
-    AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, ItemAtCursor, Node,
-    NodeItem, NodePayload, Primary, Project, Severity, SeverityMap, Span,
+    AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
+    ItemAtCursor, Node, NodeItem, NodePayload, Primary, Project, Severity, SeverityMap, Span,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
@@ -133,9 +133,36 @@ impl LanguageServer for Backend {
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                workspace: Some(WorkspaceServerCapabilities {
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: Some(OneOf::Left(true)),
+                    }),
+                    file_operations: None,
+                }),
                 ..ServerCapabilities::default()
             },
         })
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        let mut changed = false;
+        for change in params.changes {
+            let mut loader = self.loader.write();
+            match loader.notify(Path::new(change.uri.path())) {
+                IncludeLoaderNotifyAction::None => {}
+                IncludeLoaderNotifyAction::Reset => {
+                    self.project.write().reset(&mut loader);
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.publish_diagnostics().await;
+            if let Err(err) = self.client.workspace_diagnostic_refresh().await {
+                eprintln!("Error reporting workspace diagnostic refresh: {err}");
+            }
+        }
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
@@ -144,7 +171,31 @@ impl LanguageServer for Backend {
         self.publish_diagnostics().await
     }
 
-    async fn initialized(&self, _: InitializedParams) {}
+    async fn initialized(&self, _: InitializedParams) {
+        let Some(watchers) = self.loader.read().watch_patterns().map(|patterns| {
+            patterns
+                .into_iter()
+                .map(|pattern| FileSystemWatcher {
+                    glob_pattern: GlobPattern::String(pattern),
+                    kind: Some(WatchKind::Change),
+                })
+                .collect::<Vec<_>>()
+        }) else {
+            return;
+        };
+
+        let _ = self
+            .client
+            .register_capability(vec![Registration {
+                id: "watch-patterns".to_string(),
+                method: "workspace/didChangeWatchedFiles".to_string(),
+                register_options: serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                    watchers,
+                })
+                .ok(),
+            }])
+            .await;
+    }
 
     async fn shutdown(&self) -> Result<()> {
         Ok(())
