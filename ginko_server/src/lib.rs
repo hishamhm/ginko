@@ -177,7 +177,7 @@ impl LanguageServer for Backend {
                 .into_iter()
                 .map(|pattern| FileSystemWatcher {
                     glob_pattern: GlobPattern::String(pattern),
-                    kind: Some(WatchKind::Change),
+                    kind: None, // default: Create | Change | Delete
                 })
                 .collect::<Vec<_>>()
         }) else {
