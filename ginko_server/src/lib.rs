@@ -148,8 +148,12 @@ impl LanguageServer for Backend {
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         let mut changed = false;
         for change in params.changes {
+            let Some(file_path) = self.url_to_file_path(change.uri).await else {
+                continue;
+            };
+
             let mut loader = self.loader.write();
-            match loader.notify(Path::new(change.uri.path())) {
+            match loader.notify(Path::new(file_path.as_path())) {
                 IncludeLoaderNotifyAction::None => {}
                 IncludeLoaderNotifyAction::Reset => {
                     self.project.write().reset(&mut loader);
