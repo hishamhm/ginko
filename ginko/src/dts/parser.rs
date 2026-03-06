@@ -537,16 +537,7 @@ where
                 } else {
                     (tok, None)
                 };
-            let (tok, label) = match &tok.kind {
-                TokenKind::Label(string) => {
-                    self.check_is_label(tok.span(), string);
-                    (
-                        self.lexer.expect_next()?,
-                        Some(WithToken::new(string.clone(), tok)),
-                    )
-                }
-                _ => (tok, None),
-            };
+            let (tok, label) = self.consume_label_if_present(tok)?;
             let ident = match &tok.kind {
                 TokenKind::Ident(string) => WithToken::new(string.clone(), tok),
                 TokenKind::CloseBrace => {
@@ -718,8 +709,35 @@ where
         }
     }
 
+    fn consume_label_if_present(
+        &mut self,
+        tok: Token,
+    ) -> Result<(Token, Option<WithToken<String>>)> {
+        Ok(match &tok.kind {
+            TokenKind::Label(string) => {
+                self.check_is_label(tok.span(), string);
+                (
+                    self.lexer.expect_next()?,
+                    Some(WithToken::new(string.clone(), tok)),
+                )
+            }
+            _ => (tok, None),
+        })
+    }
+
     pub fn primary(&mut self) -> Result<Primary> {
         let token = self.lexer.expect_next()?;
+
+        let (token, label) = self.consume_label_if_present(token)?;
+
+        if label.is_some() && !matches!(&token.kind, TokenKind::Ref(_)) {
+            self.diagnostics.push(Diagnostic::from_token(
+                token.clone(),
+                ErrorCode::ParserError,
+                "Top-level labels are only accepted in referenced nodes",
+            ));
+        }
+
         match &token.kind {
             TokenKind::Directive(CompilerDirective::DTSVersionHeader) => {
                 self.expect_semicolon()?;
@@ -789,10 +807,11 @@ where
             TokenKind::Ref(reference) => {
                 let reference = self.reference(token.clone(), reference);
                 let root_payload = self.node_payload()?;
-                Ok(Primary::ReferencedNode(ReferencedNode {
+                Ok(Primary::ReferencedNode(Arc::new(ReferencedNode {
+                    label,
                     reference,
                     payload: root_payload,
-                }))
+                })))
             }
             TokenKind::Directive(CompilerDirective::DeleteNode) => {
                 let reference = self.parse_reference()?;

@@ -18,6 +18,7 @@ enum Labeled {
     Node(Arc<Node>),
     #[allow(unused)]
     Property(Arc<Property>),
+    ReferencedNode(Arc<ReferencedNode>),
 }
 
 /// Struct containing all important information when analyzing a device-tree.
@@ -63,6 +64,45 @@ impl AnalysisContext {
         match reference {
             Reference::Label(label) => self.get_node_by_label(label),
             Reference::Path(path) => self.get_node_by_path(path),
+        }
+    }
+
+    pub fn get_node_position(&self, node: &Arc<Node>) -> (Span, Arc<std::path::Path>) {
+        (node.name.span(), node.name.source())
+    }
+
+    pub fn get_referenced_node_position(
+        &self,
+        node: &Arc<ReferencedNode>,
+    ) -> Option<(Span, Arc<std::path::Path>)> {
+        node.label
+            .as_ref()
+            .map(|label| (label.span(), label.source()))
+    }
+
+    pub fn get_position(&self, reference: &Reference) -> Option<(Span, Arc<std::path::Path>)> {
+        match reference {
+            Reference::Label(label) => match self.labels.get(label) {
+                Some(Labeled::Node(node)) => Some(self.get_node_position(node)),
+                Some(Labeled::ReferencedNode(node)) => self.get_referenced_node_position(node),
+                _ => None,
+            },
+            Reference::Path(path) => self
+                .get_node_by_path(path)
+                .map(|node| self.get_node_position(node)),
+        }
+    }
+
+    pub fn get_name(&self, reference: &Reference) -> Option<String> {
+        match reference {
+            Reference::Label(label) => match self.labels.get(label) {
+                Some(Labeled::Node(node)) => Some(node.name.name.clone()),
+                Some(Labeled::ReferencedNode(node)) => node.label.as_deref().cloned(),
+                _ => None,
+            },
+            Reference::Path(path) => self
+                .get_node_by_path(path)
+                .map(|node| node.name.name.clone()),
         }
     }
 }
@@ -158,7 +198,7 @@ impl Analysis {
                     ctx.first_non_include = true
                 }
                 Primary::ReferencedNode(referenced_node) => {
-                    self.analyze_referenced_node(&mut ctx, referenced_node);
+                    self.analyze_referenced_node(&mut ctx, referenced_node.clone());
                     ctx.first_non_include = true
                 }
                 Primary::CStyleInclude(_) => {}
@@ -253,7 +293,16 @@ impl Analysis {
         }
     }
 
-    pub fn analyze_referenced_node(&mut self, ctx: &mut FileContext<'_>, node: &ReferencedNode) {
+    pub fn analyze_referenced_node(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        node: Arc<ReferencedNode>,
+    ) {
+        if let Some(label) = &node.label {
+            ctx.labels
+                .insert(label.item().clone(), Labeled::ReferencedNode(node.clone()));
+        }
+
         let path = if ctx.file_type == FileType::DtSource {
             self.resolve_reference(ctx, &node.reference)
         } else {

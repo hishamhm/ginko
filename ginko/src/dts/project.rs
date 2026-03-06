@@ -233,8 +233,8 @@ impl Project {
     }
 
     pub fn document_reference(&self, path: &Path, reference: &Reference) -> Option<String> {
-        let referenced = self.get_analysis(path)?.get_referenced(reference)?;
-        Some(format!("Node {}", referenced.name.name.clone()))
+        let name = self.get_analysis(path)?.get_name(reference)?;
+        Some(format!("Node {}", name))
     }
 
     pub fn get_node_position(
@@ -242,8 +242,7 @@ impl Project {
         path: &Path,
         reference: &Reference,
     ) -> Option<(Span, Arc<Path>)> {
-        let referenced = self.get_analysis(path)?.get_referenced(reference)?;
-        Some((referenced.name.span(), referenced.name.source()))
+        self.get_analysis(path)?.get_position(reference)
     }
 
     pub fn get_root(&self, path: &Path) -> Option<&DtsFile> {

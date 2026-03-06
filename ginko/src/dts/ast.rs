@@ -505,6 +505,7 @@ impl Display for AnyDirective {
 
 #[derive(Eq, PartialEq, Debug)]
 pub struct ReferencedNode {
+    pub label: Option<WithToken<String>>,
     pub reference: WithToken<Reference>,
     pub payload: NodePayload,
 }
@@ -525,7 +526,7 @@ impl Display for ReferencedNode {
 pub enum Primary {
     Directive(AnyDirective),
     Root(Arc<Node>),
-    ReferencedNode(ReferencedNode),
+    ReferencedNode(Arc<ReferencedNode>),
     // C-style includes should be put into a separate pass
     CStyleInclude(String),
 }
