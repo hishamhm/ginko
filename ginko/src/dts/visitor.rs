@@ -139,7 +139,13 @@ impl PropertyValue {
                 }
             }
             PropertyValue::ByteStrings(..) => None,
-            PropertyValue::Incbin(_, include, _) => Some(ItemAtCursor::Include(include)),
+            PropertyValue::Incbin(_, include, _) => {
+                if include.span().contains(cursor) {
+                    Some(ItemAtCursor::Include(include))
+                } else {
+                    None
+                }
+            }
         }
     }
 }
