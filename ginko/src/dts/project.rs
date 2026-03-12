@@ -78,8 +78,81 @@ impl ProjectFile {
 }
 
 #[derive(Default)]
+struct FileRefCount {
+    counts: HashMap<PathBuf, usize>,
+    includes: HashMap<PathBuf, Vec<PathBuf>>,
+}
+
+impl FileRefCount {
+    /// Adds a file.
+    /// This is called by a language server when a file is opened in the editor.
+    pub fn add_file(&mut self, path: &Path) {
+        self.increment_counter(path);
+    }
+
+    /// Adds a file via an `/include/`.
+    /// This increments the reference counter for the included file,
+    /// and adds it to the tree of included files from its parent.
+    pub fn add_included_file(&mut self, parent: &Path, included: &Path) {
+        self.increment_counter(included);
+        self.add_to_includes(parent, included);
+    }
+
+    /// Requests a file removal.
+    /// This is called by a language server when the tab for a file is closed in the editor.
+    /// This decrements reference counts for the file and also its whole include chain.
+    /// Returns the list of files that ended up with refcount zero after the traversal,
+    /// which should be actually ejected from the project files list.
+    pub fn remove_file(&mut self, path: &Path) -> Vec<PathBuf> {
+        let mut vec = vec![];
+        self.remove_to_vec(path, &mut vec);
+        vec
+    }
+
+    fn increment_counter(&mut self, path: &Path) {
+        self.counts
+            .entry(PathBuf::from(path))
+            .and_modify(|counter| *counter += 1)
+            .or_insert(1);
+    }
+
+    fn decrement_counter(&mut self, path: &Path) -> usize {
+        let mut value = 0;
+        self.counts
+            .entry(PathBuf::from(path))
+            .and_modify(|counter| {
+                *counter -= 1;
+                value = *counter;
+            });
+        if value == 0 {
+            self.counts.remove(path);
+        }
+        value
+    }
+
+    fn add_to_includes(&mut self, parent: &Path, included: &Path) {
+        self.includes
+            .entry(PathBuf::from(parent))
+            .and_modify(|vec| vec.push(PathBuf::from(included)))
+            .or_insert_with(|| vec![PathBuf::from(included)]);
+    }
+
+    fn remove_to_vec(&mut self, path: &Path, vec: &mut Vec<PathBuf>) {
+        if self.decrement_counter(path) == 0 {
+            if let Some(includes) = self.includes.remove(path) {
+                for inc in includes {
+                    self.remove_to_vec(&inc, vec);
+                }
+            }
+            vec.push(PathBuf::from(path));
+        }
+    }
+}
+
+#[derive(Default)]
 pub struct Project {
     files: HashMap<PathBuf, ProjectFile>,
+    refcount: FileRefCount,
     pub include_paths: Vec<PathBuf>,
     pub severities: SeverityMap,
 }
@@ -123,6 +196,9 @@ impl Project {
         loader: &mut IncludeLoaderGuard,
     ) {
         let file_name = dunce::canonicalize(file_name).expect("File must be present");
+
+        self.refcount.add_file(&file_name);
+
         // First step: Parse file and all dependencies.
         // Dependencies are cached.
         self.parse_file(file_name.clone(), text, file_type, loader);
@@ -181,7 +257,9 @@ impl Project {
 
     pub fn remove_file(&mut self, path: &Path) {
         if let Ok(path) = dunce::canonicalize(path) {
-            self.files.remove(&path);
+            for file in self.refcount.remove_file(&path) {
+                self.files.remove(&file);
+            }
         }
     }
 
@@ -310,6 +388,9 @@ impl Project {
                 return;
             }
         };
+
+        self.refcount.add_included_file(parent, &canonicalized_path);
+
         // Avoids duplicate insertion and cyclic dependencies
         if self.files.contains_key(&canonicalized_path) {
             return;
@@ -607,6 +688,107 @@ mod tests {
         assert!(project.get_file(&file1).is_some());
         assert!(project.get_file(&file2).is_some());
         assert!(project.get_file(&file3).is_some());
+    }
+
+    #[test]
+    pub fn remove_file_uses_refcount() {
+        let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
+        let temp_dir = TempDir::new();
+        let (_, file1) = temp_dir.add_file("tests-include1.dtsi", "");
+        let (_, file2) = temp_dir.add_file(
+            "tests-include2.dtsi",
+            format!(r#"/include/ "{}""#, file1.display()).as_str(),
+        );
+        let (_, file3) = temp_dir.add_file(
+            "test3.dts",
+            format!(
+                r#"
+/dts-v1/;
+
+/include/ "{}"
+"#,
+                file2.display()
+            ),
+        );
+        let (_, file4) = temp_dir.add_file(
+            "test4.dts",
+            format!(
+                r#"
+/dts-v1/;
+
+/include/ "{}"
+"#,
+                file2.display()
+            ),
+        );
+
+        project
+            .add_file(
+                file3.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Unexpected IO error");
+
+        project
+            .add_file(
+                file4.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Unexpected IO error");
+
+        project.assert_no_diagnostics();
+
+        assert!(project.get_file(&file1).is_some());
+        assert!(project.get_file(&file2).is_some());
+        assert!(project.get_file(&file3).is_some());
+        assert!(project.get_file(&file4).is_some());
+
+        // Equivalent to opening the included files by themselves in an editor:
+        // this increases their reference count.
+        project
+            .add_file(
+                file1.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Cannot add file");
+        project
+            .add_file(
+                file2.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Cannot add file");
+
+        assert!(project.get_file(&file1).is_some());
+        assert!(project.get_file(&file2).is_some());
+        assert!(project.get_file(&file3).is_some());
+        assert!(project.get_file(&file4).is_some());
+
+        // Removal respects reference counting: included files are preserved
+        // until last reference including them is removed.
+        project.remove_file(&file1);
+        assert!(project.get_file(&file1).is_some());
+        project.remove_file(&file2);
+        assert!(project.get_file(&file2).is_some());
+
+        // Only file3 is removed:
+        project.remove_file(&file3);
+        assert!(project.get_file(&file1).is_some());
+        assert!(project.get_file(&file2).is_some());
+        assert!(project.get_file(&file3).is_none());
+        assert!(project.get_file(&file4).is_some());
+
+        // Now all files will be removed:
+        project.remove_file(&file4);
+        assert!(project.get_file(&file1).is_none());
+        assert!(project.get_file(&file2).is_none());
+        assert!(project.get_file(&file3).is_none());
+        assert!(project.get_file(&file4).is_none());
+
+        // Attempting to remove again is harmless:
+        project.remove_file(&file3);
+        assert!(project.get_file(&file3).is_none());
     }
 
     #[test]
