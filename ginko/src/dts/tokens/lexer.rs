@@ -113,6 +113,30 @@ where
         }
     }
 
+    // precondition: cursor is past '$' token
+    // x = ${/some/path}
+    //      ^~~ cursor is here
+    fn property_path(&mut self, start: Position) -> Option<Token> {
+        let ch = self.reader.peek()?;
+        match ch {
+            b'{' => {
+                self.reader.skip();
+                let path = self.read_while(|ch| ch != b'}');
+                self.reader.consume()?;
+                Some(Token {
+                    span: start.to(self.reader.pos()),
+                    kind: TokenKind::Ref(Reference::PropertyPath(String::from_utf8(path).unwrap())),
+                    source: self.source(),
+                })
+            }
+            ch => Some(Token {
+                span: start.to(self.reader.pos()),
+                kind: TokenKind::Unknown(ch),
+                source: self.source(),
+            }),
+        }
+    }
+
     // precondition: cursor is past last slash
     // node,name = ...
     // ^~~ cursor is here
@@ -305,9 +329,13 @@ where
         match ch {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' => Some(self.ident_or_label(start_pos)),
             b'0'..=b'9' => Some(self.number(start_pos)),
-            b'&' | b'$' => {
+            b'&' => {
                 self.reader.skip();
                 self.path_or_reference(start_pos)
+            }
+            b'$' => {
+                self.reader.skip();
+                self.property_path(start_pos)
             }
             b'"' => {
                 self.reader.skip();
@@ -690,6 +718,59 @@ mod test {
             Token {
                 span: Position::zero().to(Position::new(0, 16)),
                 kind: Ref(Reference::Path("/path/to/node".into())),
+                source: source.clone(),
+            }
+        );
+    }
+
+    #[test]
+    pub fn tokenize_property_path_reference() {
+        let (source, mut lexer) = new_lexer("$BAD");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 1)),
+                kind: Unknown(b'B'),
+                source: source.clone(),
+            }
+        );
+
+        let (source, mut lexer) = new_lexer("${}");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 3)),
+                kind: Ref(Reference::PropertyPath("".into())),
+                source: source.clone(),
+            }
+        );
+
+        let (source, mut lexer) = new_lexer("${ref}");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 6)),
+                kind: Ref(Reference::PropertyPath("ref".into())),
+                source: source.clone(),
+            }
+        );
+
+        let (source, mut lexer) = new_lexer("${/}");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 4)),
+                kind: Ref(Reference::PropertyPath("/".into())),
+                source: source.clone(),
+            }
+        );
+
+        let (source, mut lexer) = new_lexer("${/path/to/node}");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 16)),
+                kind: Ref(Reference::PropertyPath("/path/to/node".into())),
                 source: source.clone(),
             }
         );

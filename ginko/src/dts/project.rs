@@ -311,8 +311,8 @@ impl Project {
     }
 
     pub fn document_reference(&self, path: &Path, reference: &Reference) -> Option<String> {
-        let name = self.get_analysis(path)?.get_name(reference)?;
-        Some(format!("Node {}", name))
+        let name = self.get_analysis(path)?.get_referred(reference)?;
+        Some(name)
     }
 
     pub fn get_node_position(
