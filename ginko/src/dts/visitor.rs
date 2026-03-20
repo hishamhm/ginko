@@ -4,6 +4,7 @@ use crate::dts::ast::{
 };
 use crate::dts::{HasSpan, NodeItem, Position};
 
+#[derive(Debug)]
 #[allow(unused)]
 pub enum ItemAtCursor<'a> {
     Property(&'a Property),

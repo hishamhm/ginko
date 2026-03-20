@@ -1,6 +1,8 @@
+use itertools::Itertools;
+
 use crate::dts::ast::{
     AnyDirective, Cell, DtsFile, Include, Node, NodeItem, NodePayload, Path, Primary, Property,
-    PropertyValue, Reference, ReferencedNode, WithToken,
+    PropertyPath, PropertyValue, Reference, ReferencedNode, WithToken,
 };
 use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
@@ -64,6 +66,7 @@ impl AnalysisContext {
         match reference {
             Reference::Label(label) => self.get_node_by_label(label),
             Reference::Path(path) => self.get_node_by_path(path),
+            Reference::PropertyPath(path) => self.get_node_by_path(path.node_path()),
         }
     }
 
@@ -80,6 +83,20 @@ impl AnalysisContext {
             .map(|label| (label.span(), label.source()))
     }
 
+    fn get_property_by_property_path(&self, path: &PropertyPath) -> Option<Arc<Property>> {
+        let node = self.get_node_by_path(path.node_path())?;
+        let payload = &node.payload;
+        let property_name = path.property_name();
+        for item in &payload.items {
+            if let NodeItem::Property(property) = item {
+                if property.name.item() == property_name {
+                    return Some(property.clone());
+                }
+            }
+        }
+        None
+    }
+
     pub fn get_position(&self, reference: &Reference) -> Option<(Span, Arc<std::path::Path>)> {
         match reference {
             Reference::Label(label) => match self.labels.get(label) {
@@ -90,19 +107,34 @@ impl AnalysisContext {
             Reference::Path(path) => self
                 .get_node_by_path(path)
                 .map(|node| self.get_node_position(node)),
+            Reference::PropertyPath(path) => {
+                let property = self.get_property_by_property_path(path)?;
+                Some((property.name.span(), property.name.source()))
+            }
         }
     }
 
-    pub fn get_name(&self, reference: &Reference) -> Option<String> {
+    pub fn get_referred(&self, reference: &Reference) -> Option<String> {
         match reference {
             Reference::Label(label) => match self.labels.get(label) {
-                Some(Labeled::Node(node)) => Some(node.name.name.clone()),
+                Some(Labeled::Node(node)) => {
+                    let mut name = node.name.name.clone();
+                    if let Some(unit_address) = &node.name.unit_address {
+                        name += "@";
+                        name += unit_address;
+                    }
+                    Some(name)
+                }
                 Some(Labeled::ReferencedNode(node)) => node.label.as_deref().cloned(),
                 _ => None,
             },
             Reference::Path(path) => self
                 .get_node_by_path(path)
                 .map(|node| node.name.name.clone()),
+            Reference::PropertyPath(path) => {
+                let property = self.get_property_by_property_path(path)?;
+                Some(property.values.iter().map(|v| v.to_string()).join(", "))
+            }
         }
     }
 }
@@ -290,6 +322,10 @@ impl Analysis {
                 };
                 path.clone()
             }
+            Reference::PropertyPath(path) => {
+                self.resolve_property_path(ctx, reference.span(), reference.source(), path);
+                path.node_path().clone()
+            }
         }
     }
 
@@ -328,7 +364,31 @@ impl Analysis {
                         self.unresolved_reference_error(ctx, span, source);
                     }
                 }
+                Reference::PropertyPath(path) => {
+                    self.resolve_property_path(ctx, span, source, path);
+                }
             }
+        }
+    }
+
+    fn resolve_property_path(
+        &self,
+        ctx: &mut FileContext<'_>,
+        span: Span,
+        source: Arc<StdPath>,
+        path: &PropertyPath,
+    ) {
+        if let Some(node) = ctx.flat_nodes.get(path.node_path()) {
+            let payload = &node.payload;
+            let property_name = path.property_name();
+            if !payload.items.iter().any(|item| {
+                matches!(item, NodeItem::Property(property)
+                    if property.name.item() == property_name)
+            }) {
+                self.unresolved_reference_error(ctx, span, source);
+            }
+        } else {
+            self.unresolved_reference_error(ctx, span, source);
         }
     }
 
@@ -545,6 +605,89 @@ mod test {
                 .name
                 .span(),
             code.s1("some_other_node").span(),
+        );
+        assert_eq!(
+            context
+                .get_node_by_label("node4")
+                .expect("Reference should be set")
+                .name
+                .span(),
+            code.s1("node4: some_node").s1("some_node").span()
+        );
+        assert!(context.get_node_by_label("node3").is_none())
+    }
+
+    #[test]
+    pub fn test_resolve_property_values() {
+        let code = Code::new(
+            "\
+/dts-v1/;
+
+/{
+    node1: some_node {
+        v0 = <0x00>;
+        ref-to-node2 = ${/some_other_node/v1};
+        bad-ref-to-node2 = ${/some_other_node/v1bad};
+        ref-to-node3 = <${/node3/bad1}>;
+    };
+    node2: some_other_node {
+        v1 = <0x10>;
+        ref-to-node1-path = ${/some_node/v0};
+        ref-to-node4-path = ${/some_other_node/some_node/v4};
+        bad-ref-to-node4-path = ${/some_other_node/some_node/v4bad};
+        ref-to-node3-path = ${/node3/bad2};
+        node4: some_node {
+            self-reference = &node4;
+            v4 = <0x20>;
+        };
+    };
+};",
+        );
+        let (diagnostics, context) = code.get_analyzed_file();
+        assert_eq_unordered!(
+            diagnostics,
+            vec![
+                Diagnostic::new(
+                    code.s1("${/node3/bad1}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+                Diagnostic::new(
+                    code.s1("${/some_other_node/v1bad}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+                Diagnostic::new(
+                    code.s1("${/node3/bad2}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+                Diagnostic::new(
+                    code.s1("${/some_other_node/some_node/v4bad}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+            ]
+        );
+        assert_eq!(
+            context
+                .get_node_by_label("node1")
+                .expect("Reference should be set")
+                .name
+                .span(),
+            code.s1("some_node").span()
+        );
+        assert_eq!(
+            context
+                .get_node_by_label("node2")
+                .expect("Reference should be set")
+                .name
+                .span(),
+            code.s("some_other_node", 3).span(),
         );
         assert_eq!(
             context

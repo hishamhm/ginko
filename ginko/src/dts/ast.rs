@@ -173,10 +173,56 @@ impl From<&str> for Path {
     }
 }
 
+// osdyne extension: ${/path/to/node/value}
+#[derive(Eq, PartialEq, Debug, Hash, Clone)]
+
+pub struct PropertyPath {
+    node_path: Path,
+    property_name: String,
+}
+
+impl PropertyPath {
+    pub fn new(node_path: Path, property_name: String) -> PropertyPath {
+        PropertyPath {
+            node_path,
+            property_name,
+        }
+    }
+
+    pub fn node_path(&self) -> &Path {
+        &self.node_path
+    }
+
+    pub fn property_name(&self) -> &str {
+        &self.property_name
+    }
+}
+
+impl From<&str> for PropertyPath {
+    fn from(value: &str) -> Self {
+        if let Some((node_path, property_name)) = value.rsplit_once('/') {
+            PropertyPath::new(Path::from(node_path), property_name.to_string())
+        } else {
+            PropertyPath::new(Path::empty(), value.to_string())
+        }
+    }
+}
+
+impl Display for PropertyPath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if self.node_path().elements.is_empty() {
+            write!(f, "{}", self.property_name)
+        } else {
+            write!(f, "{}/{}", self.node_path, self.property_name)
+        }
+    }
+}
+
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub enum Reference {
     Label(String),
     Path(Path),
+    PropertyPath(PropertyPath),
 }
 
 impl Display for Reference {
@@ -184,6 +230,7 @@ impl Display for Reference {
         match self {
             Reference::Label(label) => write!(f, "&{label}"),
             Reference::Path(path) => write!(f, "&{{{path}}}"),
+            Reference::PropertyPath(path) => write!(f, "${{{path}}}"),
         }
     }
 }

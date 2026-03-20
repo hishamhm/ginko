@@ -82,6 +82,9 @@ pub enum Reference {
     // &{/path/to/some/label}
     // Verification happens at the parser / analysis site
     Path(String),
+    // ${/path/to/some/property}
+    // Verification happens at the parser / analysis site
+    PropertyPath(String),
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]

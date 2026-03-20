@@ -1,6 +1,6 @@
 use crate::dts::ast::{
     AnyDirective, Cell, DtsFile, Include, Memreserve, Node, NodeItem, NodeName, NodePayload, Path,
-    Primary, Property, PropertyValue, ReferencedNode, WithToken,
+    Primary, Property, PropertyPath, PropertyValue, ReferencedNode, WithToken,
 };
 use crate::dts::data::{HasSource, Span};
 use crate::dts::diagnostics::{Diagnostic, NameContext};
@@ -191,6 +191,30 @@ where
                     self.check_is_node_name(token.span(), el);
                 }
                 WithToken::new(crate::dts::ast::Reference::Path(path), token)
+            }
+            Reference::PropertyPath(path) => {
+                // FIXME: for now we simply ignore relative path markers.
+                let stripped = path.strip_prefix("./");
+                let path = if let Some(rest) = stripped {
+                    rest
+                } else {
+                    path.as_str()
+                };
+
+                if path.is_empty() {
+                    self.diagnostics.push(Diagnostic::from_token(
+                        token.clone(),
+                        ErrorCode::PathCannotBeEmpty,
+                        "Path cannot be empty",
+                    ));
+                }
+                let path = PropertyPath::from(path);
+
+                for el in path.node_path().iter() {
+                    self.check_is_node_name(token.span(), el);
+                }
+                self.check_is_property_name(token.span(), path.property_name());
+                WithToken::new(crate::dts::ast::Reference::PropertyPath(path), token)
             }
         }
     }
@@ -848,7 +872,7 @@ where
 mod test {
     use crate::dts::ast::{
         Cell, DtsFile, Include, Memreserve, Node, NodeItem, NodeName, NodePayload, Path, Property,
-        PropertyValue, Reference, WithToken,
+        PropertyPath, PropertyValue, Reference, WithToken,
     };
     use crate::dts::data::HasSource;
     use crate::dts::diagnostics::Diagnostic;
@@ -989,6 +1013,25 @@ mod test {
                     NodeName::simple("to"),
                     NodeName::with_address("somewhere", "2000"),
                 ])),
+                code.token(),
+            ))
+        );
+    }
+
+    #[test]
+    pub fn property_path_reference_properties() {
+        let code = Code::new("${/path/to/somewhere@2000/value}");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Reference(WithToken::new(
+                Reference::PropertyPath(PropertyPath::new(
+                    Path::new(vec![
+                        NodeName::simple("path"),
+                        NodeName::simple("to"),
+                        NodeName::with_address("somewhere", "2000"),
+                    ]),
+                    "value".to_string()
+                )),
                 code.token(),
             ))
         );
