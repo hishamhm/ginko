@@ -38,10 +38,43 @@ pub enum TokenKind {
     // this simply represents a string starting with a number.
     // Verifying this number is done by the parser when more context is available.
     UnparsedNumber(String),
+    UnparsedExpression(String),
     Directive(CompilerDirective),
     Ref(Reference),
     Comment(String),
     Unknown(u8),
+}
+
+impl TokenKind {
+    pub fn stringify(&self) -> String {
+        match self {
+            TokenKind::Semicolon => ";".to_string(),
+            TokenKind::Slash => "/".to_string(),
+            TokenKind::Equal => "=".to_string(),
+            TokenKind::OpenBracket => "[".to_string(),
+            TokenKind::CloseBracket => "]".to_string(),
+            TokenKind::OpenParen => "(".to_string(),
+            TokenKind::CloseParen => ")".to_string(),
+            TokenKind::ChevronLeft => "<".to_string(),
+            TokenKind::ChevronRight => ">".to_string(),
+            TokenKind::Comma => ",".to_string(),
+            TokenKind::OpenBrace => "{".to_string(),
+            TokenKind::CloseBrace => "}".to_string(),
+            TokenKind::Ident(ident) => ident.clone(),
+            TokenKind::Label(label) => label.clone(),
+            TokenKind::String(str) => str.clone(),
+            TokenKind::UnparsedNumber(str) => str.clone(),
+            TokenKind::UnparsedExpression(str) => str.clone(),
+            TokenKind::Directive(compiler_directive) => format!("{}", compiler_directive),
+            TokenKind::Ref(reference) => match reference {
+                Reference::Simple(simple) => format!("&{simple}"),
+                Reference::Path(path) => format!("&{path}"),
+                Reference::PropertyPath(path) => format!("${path}"),
+            },
+            TokenKind::Comment(comment) => format!("// {comment}\n"),
+            TokenKind::Unknown(u) => format!("{}", *u as char),
+        }
+    }
 }
 
 #[derive(Eq, PartialEq, Debug, Clone)]

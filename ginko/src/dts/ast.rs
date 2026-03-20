@@ -239,7 +239,7 @@ impl Display for Reference {
 pub enum Cell {
     Number(WithToken<u32>),
     Reference(WithToken<Reference>),
-    Expression,
+    Expression(WithToken<String>),
 }
 
 impl Display for Cell {
@@ -247,7 +247,7 @@ impl Display for Cell {
         match self {
             Cell::Number(num) => write!(f, "0x{num:x}"),
             Cell::Reference(reference) => write!(f, "{reference}"),
-            Cell::Expression => write!(f, "(not implemented)"),
+            Cell::Expression(exp) => write!(f, "{exp}"),
         }
     }
 }

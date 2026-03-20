@@ -248,15 +248,15 @@ where
                 }
             }
             TokenKind::OpenParen => {
-                self.skip_expression_starting_with_paren();
-                if self.lexer.peek().is_none() {
-                    self.diagnostics.push(Diagnostic::from_token(
+                if let Some(exp) = self.skip_expression_starting_with_paren() {
+                    Ok(Cell::Expression(exp))
+                } else {
+                    Err(Diagnostic::from_token(
                         tok,
                         ErrorCode::UnbalancedParentheses,
                         "Unbalanced parentheses",
-                    ));
+                    ))
                 }
-                Ok(Cell::Expression)
             }
             _ => Err(Diagnostic::expected(
                 tok.span(),
@@ -345,35 +345,50 @@ where
         }
     }
 
-    fn skip_expression_starting_with_paren(&mut self) {
+    fn skip_expression_starting_with_paren(&mut self) -> Option<WithToken<String>> {
         let mut depth = 1;
+        let mut out = String::new();
+        let start_tk = self.lexer.peek()?;
+        let source = start_tk.source().clone();
+        let start = start_tk.start();
         loop {
             let peeked = self.lexer.peek();
-            if matches!(
-                peeked,
+            match peeked {
                 Some(Token {
                     kind: TokenKind::OpenParen,
                     ..
-                })
-            ) {
-                depth += 1;
-                self.skip_tok();
-            } else if matches!(
-                peeked,
+                }) => {
+                    out += "(";
+                    depth += 1;
+                    self.skip_tok();
+                }
                 Some(Token {
                     kind: TokenKind::CloseParen,
                     ..
-                })
-            ) {
-                depth -= 1;
-                self.skip_tok();
-                if depth == 0 {
-                    return;
+                }) => {
+                    depth -= 1;
+                    let end = peeked?.end();
+                    self.skip_tok();
+                    if depth == 0 {
+                        return Some(WithToken::new(
+                            out.clone(),
+                            Token {
+                                kind: TokenKind::UnparsedExpression(out),
+                                span: Span::new(start, end),
+                                source,
+                            },
+                        ));
+                    } else {
+                        out += ")";
+                    }
                 }
-            } else if peeked.is_none() {
-                return;
-            } else {
-                self.skip_tok();
+                None => {
+                    return None;
+                }
+                Some(tk) => {
+                    out += &tk.kind.stringify();
+                    self.skip_tok();
+                }
             }
         }
     }
@@ -684,6 +699,7 @@ where
             | TokenKind::Label(_)
             | TokenKind::String(_)
             | TokenKind::UnparsedNumber(_)
+            | TokenKind::UnparsedExpression(_)
             | TokenKind::Directive(_)
             | TokenKind::Ref(_)
             | TokenKind::CloseBracket
@@ -1370,16 +1386,39 @@ mod test {
     #[test]
     fn expressions() {
         // Should simply parse; we ignore these expressions for now
-        let _ = Code::new(
+        let code = Code::new(
             "\
     /dts-v1/;
 
     / {
-        some_prop = <(1 + 1) (2 || (3 - 4)) ()>;
+        some-prop = <(1 + 1) (2 || (3 - 4)) ()>;
     };
     ",
-        )
-        .parse_ok_no_diagnostics(Parser::file);
+        );
+
+        let file = code.parse_ok_no_diagnostics(Parser::file);
+
+        let root = &file.elements[1];
+        match root {
+            Primary::Root(node) => {
+                let item = &node.payload.items[0];
+                match item {
+                    NodeItem::Property(prop) => {
+                        let propval = &prop.values[0];
+                        match propval {
+                            PropertyValue::Cells(_, cells, _) => {
+                                assert_eq!(&cells[0].to_string(), "1+1");
+                                assert_eq!(&cells[1].to_string(), "2||(3-4)");
+                                assert_eq!(&cells[2].to_string(), "");
+                            }
+                            _ => panic!("expected cells"),
+                        }
+                    }
+                    _ => panic!("expected property"),
+                }
+            }
+            _ => panic!("expected root"),
+        }
     }
 
     #[test]

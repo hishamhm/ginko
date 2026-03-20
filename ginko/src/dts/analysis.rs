@@ -475,7 +475,7 @@ impl Analysis {
         match value {
             Cell::Number(_) => {}
             Cell::Reference(reference) => self.analyze_reference(ctx, reference),
-            Cell::Expression => {}
+            Cell::Expression(_) => {}
         }
     }
 

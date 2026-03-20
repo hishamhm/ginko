@@ -63,6 +63,7 @@ impl Display for TokenKind {
             TokenKind::Label(_) => write!(f, "label"),
             TokenKind::String(_) => write!(f, "string"),
             TokenKind::UnparsedNumber(_) => write!(f, "number"),
+            TokenKind::UnparsedExpression(_) => write!(f, "expression"),
             TokenKind::Directive(directive) => write!(f, "{directive}"),
             TokenKind::Ref(_) => write!(f, "reference"),
             TokenKind::Comment(_) => write!(f, "comment"),
