@@ -32,9 +32,12 @@ impl Backend {
     }
 }
 
+/// This is the shape of the JSON object we receive from the client
+/// in the `did_change_configuration` callback. This is a free-form
+/// object in LSP; we're choosing to receive the root DTS file here.
 #[derive(Deserialize, Serialize, Default, Debug)]
 struct ProjectConfig {
-    pub includes: Vec<String>,
+    pub target: String,
 }
 
 impl ProjectConfig {
@@ -120,9 +123,11 @@ impl Backend {
 
 #[tower_lsp::async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        let config = ProjectConfig::from_value(params.initialization_options.unwrap_or_default());
-        self.loader.write().set_include_paths(config.includes);
+    async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
+        // If we wanted, we could pass arbitrary data from the client
+        // into this function as params.initialization_options.
+        // But we are getting a `did_change_configuration` on start,
+        // so we can handle the initial configuration from there.
 
         Ok(InitializeResult {
             server_info: None,
@@ -170,8 +175,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        let config = ProjectConfig::from_value(params.settings);
-        self.loader.write().set_include_paths(config.includes);
+        let _config = ProjectConfig::from_value(params.settings);
         self.publish_diagnostics().await
     }
 
