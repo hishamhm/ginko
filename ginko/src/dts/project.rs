@@ -80,15 +80,27 @@ impl ProjectFile {
 #[derive(Default)]
 pub struct Project {
     files: HashMap<PathBuf, ProjectFile>,
+    root_file: Option<PathBuf>,
     pub severities: SeverityMap,
 }
 
 impl Project {
-    pub fn reset(&mut self, loader: &mut IncludeLoaderGuard) {
-        for file in self.files.values_mut() {
-            file.clear_diagnostics();
+    pub fn reset(&mut self, loader: &mut IncludeLoaderGuard) -> Result<(), io::Error> {
+        self.files.clear();
+        if let Some(root_file) = &self.root_file {
+            self.add_path_buf(root_file.clone(), loader)?;
         }
-        self.analyze_all_files(loader)
+        Ok(())
+    }
+
+    pub fn reset_root_file(
+        &mut self,
+        file_name: String,
+        loader: &mut IncludeLoaderGuard,
+    ) -> Result<(), io::Error> {
+        let file_name = dunce::canonicalize(file_name)?;
+        self.root_file = Some(file_name);
+        self.reset(loader)
     }
 
     pub fn add_file(
@@ -97,7 +109,15 @@ impl Project {
         loader: &mut IncludeLoaderGuard,
     ) -> Result<(), io::Error> {
         let file_name = dunce::canonicalize(file_name)?;
-        let content = fs::read_to_string(file_name.clone())?;
+        self.add_path_buf(file_name, loader)
+    }
+
+    fn add_path_buf(
+        &mut self,
+        file_name: PathBuf,
+        loader: &mut IncludeLoaderGuard,
+    ) -> Result<(), io::Error> {
+        let content = fs::read_to_string(&file_name)?;
         let file_ending = FileType::from(file_name.as_path());
         self.add_file_with_text(file_name, content, file_ending, loader);
         Ok(())

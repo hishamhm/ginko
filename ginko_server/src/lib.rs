@@ -161,7 +161,7 @@ impl LanguageServer for Backend {
             match loader.notify(Path::new(file_path.as_path())) {
                 IncludeLoaderNotifyAction::None => {}
                 IncludeLoaderNotifyAction::Reset => {
-                    self.project.write().reset(&mut loader);
+                    let _ = self.project.write().reset(&mut loader);
                     changed = true;
                 }
             }
@@ -175,8 +175,15 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change_configuration(&self, params: DidChangeConfigurationParams) {
-        let _config = ProjectConfig::from_value(params.settings);
-        self.publish_diagnostics().await
+        let config = ProjectConfig::from_value(params.settings);
+        {
+            let mut loader = self.loader.write();
+            let _ = self
+                .project
+                .write()
+                .reset_root_file(config.target, &mut loader);
+        }
+        self.publish_diagnostics().await;
     }
 
     async fn initialized(&self, _: InitializedParams) {
