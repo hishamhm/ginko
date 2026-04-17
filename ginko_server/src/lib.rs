@@ -239,12 +239,7 @@ impl LanguageServer for Backend {
 
     async fn did_save(&self, _: DidSaveTextDocumentParams) {}
 
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let Some(file_path) = self.url_to_file_path(params.text_document.uri).await else {
-            return;
-        };
-        self.project.write().remove_file(&file_path);
-    }
+    async fn did_close(&self, _: DidCloseTextDocumentParams) {}
 
     async fn goto_definition(
         &self,

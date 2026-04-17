@@ -9,13 +9,11 @@ use crate::dts::reader::{ByteReader, Reader};
 use crate::dts::tokens::{CompilerDirective, Lexer, PeekingLexer, Reference, Token, TokenKind};
 use crate::dts::HasSpan;
 use itertools::Itertools;
-use std::path::{Path as StdPath, PathBuf};
+use std::path::Path as StdPath;
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
-pub struct ParserContext {
-    pub include_paths: Vec<PathBuf>,
-}
+pub struct ParserContext {}
 
 /// The `Parser` class is responsible for syntactical analysis,
 /// transforming the input token stream into an AST.
