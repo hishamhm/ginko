@@ -500,12 +500,12 @@ mod test {
     use crate::dts::data::{HasSource, HasSpan, Position};
     use crate::dts::error_codes::ErrorCode;
     use crate::dts::test::Code;
-    use crate::dts::Diagnostic;
+    use crate::dts::{Diagnostic, ParserConfig};
     use assert_unordered::assert_eq_unordered;
 
     #[test]
     pub fn test_illegal_char_in_label() {
-        let code = Code::new(
+        let code = Code::with_config(
             "\
 /dts-v1/;
 
@@ -517,6 +517,9 @@ mod test {
     };
     illegal_node_name#s {};
 };",
+            ParserConfig {
+                unlimited_property_length: false,
+            },
         );
         let (diagnostics, _) = code.get_analyzed_file();
         assert_eq_unordered!(
@@ -539,6 +542,50 @@ mod test {
                     code.source(),
                     ErrorCode::NameTooLong,
                     "label should only have 31 characters but has 41 characters"
+                ),
+                Diagnostic::new(
+                    Position::new(6, 19).as_char_span(),
+                    code.source(),
+                    ErrorCode::IllegalChar,
+                    "Illegal char '#' in label"
+                ),
+            ]
+        )
+    }
+
+    #[test]
+    pub fn test_accept_long_properties() {
+        let code = Code::with_config(
+            "\
+/dts-v1/;
+
+/{
+    my_l?abel: some_node {};
+    my_label_that_has_more_than_31_characters: other_node {};
+    some_other_node {
+        another_ill#gal_label: sub_node {};
+    };
+    illegal_node_name#s {};
+};",
+            ParserConfig {
+                unlimited_property_length: true,
+            },
+        );
+        let (diagnostics, _) = code.get_analyzed_file();
+        assert_eq_unordered!(
+            diagnostics,
+            vec![
+                Diagnostic::new(
+                    Position::new(8, 21).as_char_span(),
+                    code.source(),
+                    ErrorCode::IllegalChar,
+                    "Illegal char '#' in node name"
+                ),
+                Diagnostic::new(
+                    Position::new(3, 8).as_char_span(),
+                    code.source(),
+                    ErrorCode::IllegalChar,
+                    "Illegal char '?' in label"
                 ),
                 Diagnostic::new(
                     Position::new(6, 19).as_char_span(),

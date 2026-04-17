@@ -234,12 +234,12 @@ mod tests {
     use crate::dts::error_codes::SeverityMap;
     use crate::dts::parser::Parser;
     use crate::dts::test::Code;
-    use crate::dts::ParserContext;
+    use crate::dts::ParserConfig;
     use itertools::Itertools;
 
     #[test]
     fn display_missing_semicolon() {
-        let code = Code::with_file_name("/ {}", "fname", ParserContext::default());
+        let code = Code::with_file_name("/ {}", "fname", ParserConfig::default());
         let (_, diag) = code.parse(Parser::file);
         assert_eq!(
             diag,
@@ -276,7 +276,7 @@ error --> fname:1:5
             very-long-company,very-long-name;
         };",
             "fname",
-            ParserContext::default(),
+            ParserConfig::default(),
         );
         let (_, diag) = code.parse(Parser::file);
         let printer = DiagnosticPrinter {

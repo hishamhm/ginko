@@ -22,6 +22,6 @@ pub use loader::{
     DefaultIncludeLoader, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
 };
 pub use parser::Parser;
-pub use parser::ParserContext;
+pub use parser::ParserConfig;
 pub use project::Project;
 pub use visitor::ItemAtCursor;

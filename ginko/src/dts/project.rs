@@ -6,7 +6,7 @@ use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::ByteReader;
 use crate::dts::tokens::Lexer;
 use crate::dts::visitor::ItemAtCursor;
-use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserContext, Position, Severity, Span};
+use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Severity, Span};
 use itertools::Itertools;
 use std::collections::HashMap;
 use std::iter::empty;
@@ -82,6 +82,7 @@ pub struct Project {
     files: HashMap<PathBuf, ProjectFile>,
     root_file: Option<PathBuf>,
     pub severities: SeverityMap,
+    config: ParserConfig,
 }
 
 impl Project {
@@ -101,6 +102,10 @@ impl Project {
         let file_name = dunce::canonicalize(file_name)?;
         self.root_file = Some(file_name);
         self.reset(loader)
+    }
+
+    pub fn set_parser_config(&mut self, config: ParserConfig) {
+        self.config = config;
     }
 
     pub fn add_file(
@@ -278,7 +283,7 @@ impl Project {
         let reader = ByteReader::from_string(text.clone());
         let lexer = Lexer::new(reader, file_name.clone().into());
 
-        let mut parser = Parser::new(lexer, ParserContext {});
+        let mut parser = Parser::new(lexer, self.config.clone());
         match parser.file() {
             Ok(file) => {
                 // insert dummy file to be defined so that no cyclic dependency can occur.

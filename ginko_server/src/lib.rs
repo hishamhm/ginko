@@ -1,6 +1,7 @@
 use ginko::dts::{
     AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
-    ItemAtCursor, Node, NodeItem, NodePayload, Primary, Project, Severity, SeverityMap, Span,
+    ItemAtCursor, Node, NodeItem, NodePayload, ParserConfig, Primary, Project, Severity,
+    SeverityMap, Span,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -68,6 +69,11 @@ impl Backend {
         L: IncludeLoader + Send + 'static,
     {
         self.loader = RwLock::new(IncludeLoaderGuard::new(loader));
+        self
+    }
+
+    pub fn with_parser_config(self, config: ParserConfig) -> Self {
+        self.project.write().set_parser_config(config);
         self
     }
 

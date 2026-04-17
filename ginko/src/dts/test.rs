@@ -3,7 +3,7 @@ use crate::dts::data::HasSource;
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::{ByteReader, Reader};
 use crate::dts::tokens::{Lexer, Token};
-use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserContext, Position, Project, Span};
+use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Project, Span};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -12,7 +12,7 @@ pub struct Code {
     pos: Span,
     code: String,
     source: Arc<Path>,
-    parser_context: ParserContext,
+    parser_config: ParserConfig,
 }
 
 impl HasSpan for Code {
@@ -55,15 +55,15 @@ impl HasSource for Code {
 
 impl Code {
     pub fn new(code: &str) -> Code {
-        Code::with_file_name(code, "inline source", ParserContext::default())
+        Code::with_file_name(code, "inline source", ParserConfig::default())
     }
 
     #[allow(unused)]
-    pub fn with_context(code: &str, context: ParserContext) -> Code {
-        Code::with_file_name(code, "inline source", context)
+    pub fn with_config(code: &str, config: ParserConfig) -> Code {
+        Code::with_file_name(code, "inline source", config)
     }
 
-    pub fn with_file_name(code: &str, file_name: &str, context: ParserContext) -> Code {
+    pub fn with_file_name(code: &str, file_name: &str, config: ParserConfig) -> Code {
         let last_pos = code
             .lines()
             .enumerate()
@@ -74,7 +74,7 @@ impl Code {
             pos: Span::new(Position::zero(), last_pos),
             code: code.into(),
             source: Arc::from(PathBuf::from(file_name)),
-            parser_context: context,
+            parser_config: config,
         }
     }
 
@@ -89,7 +89,7 @@ impl Code {
         let mut reader = ByteReader::from_string(self.code.clone());
         reader.seek(self.pos.start());
         let lexer = Lexer::new(reader, self.source.clone());
-        let mut parser = Parser::new(lexer, self.parser_context.clone());
+        let mut parser = Parser::new(lexer, self.parser_config.clone());
         (parse_fn(&mut parser), parser.diagnostics)
     }
 
@@ -132,7 +132,7 @@ impl Code {
             code: self.code.clone(),
             pos: span,
             source: self.source.clone(),
-            parser_context: self.parser_context.clone(),
+            parser_config: self.parser_config.clone(),
         }
     }
 

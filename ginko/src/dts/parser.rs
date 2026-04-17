@@ -13,7 +13,9 @@ use std::path::Path as StdPath;
 use std::sync::Arc;
 
 #[derive(Clone, Default)]
-pub struct ParserContext {}
+pub struct ParserConfig {
+    pub unlimited_property_length: bool,
+}
 
 /// The `Parser` class is responsible for syntactical analysis,
 /// transforming the input token stream into an AST.
@@ -23,7 +25,7 @@ where
 {
     lexer: PeekingLexer<R>,
     pub diagnostics: Vec<Diagnostic>,
-    pub context: ParserContext,
+    pub config: ParserConfig,
 }
 
 type Result<T> = std::result::Result<T, Diagnostic>;
@@ -32,18 +34,18 @@ impl<R> Parser<R>
 where
     R: Reader + Sized,
 {
-    pub fn new(lexer: Lexer<R>, context: ParserContext) -> Parser<R> {
+    pub fn new(lexer: Lexer<R>, config: ParserConfig) -> Parser<R> {
         Parser {
             lexer: PeekingLexer::from(lexer),
             diagnostics: vec![],
-            context,
+            config,
         }
     }
 }
 
 impl Parser<ByteReader> {
     pub fn from_text(
-        context: ParserContext,
+        config: ParserConfig,
         text: impl Into<String>,
         source: Arc<StdPath>,
     ) -> Parser<ByteReader> {
@@ -51,7 +53,7 @@ impl Parser<ByteReader> {
         Parser {
             lexer: lexer.into(),
             diagnostics: vec![],
-            context,
+            config,
         }
     }
 }
@@ -86,7 +88,7 @@ where
                 ErrorCode::IllegalChar,
                 format!("Illegal char '{ch}' in {name_context}"),
             ));
-        } else if str.len() > 31 {
+        } else if !self.config.unlimited_property_length && str.len() > 31 {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 self.lexer.source(),
