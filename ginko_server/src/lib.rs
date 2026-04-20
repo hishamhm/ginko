@@ -187,7 +187,7 @@ impl LanguageServer for Backend {
             let _ = self
                 .project
                 .write()
-                .reset_root_file(config.target, &mut loader);
+                .set_root_file_and_reset(config.target, &mut loader);
         }
         self.publish_diagnostics().await;
     }
@@ -259,7 +259,13 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         let Some(file_path) = self
-            .url_to_file_path(params.text_document_position_params.text_document.uri)
+            .url_to_file_path(
+                params
+                    .text_document_position_params
+                    .text_document
+                    .uri
+                    .clone(),
+            )
             .await
         else {
             return Ok(None);

@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 /// Something that can be labeled.
 /// Used when analyzing a device-tree
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Labeled {
     Node(Arc<Node>),
     #[allow(unused)]
@@ -24,33 +24,50 @@ enum Labeled {
 }
 
 /// Struct containing all important information when analyzing a device-tree.
-/// This struct only takes care of identifying cyclic dependencies, but
 pub(crate) struct Analysis {
     import_guard: ImportGuard<PathBuf>,
     loader: IncludeLoaderGuard,
+    context: AnalysisContext,
 }
 
 impl Analysis {
-    pub fn new(loader: &IncludeLoaderGuard) -> Analysis {
+    pub fn new(
+        include_cache: Option<HashMap<String, PathBuf>>,
+        loader: &IncludeLoaderGuard,
+    ) -> Analysis {
+        let mut context = AnalysisContext::default();
+        if let Some(include_cache) = include_cache {
+            context.includes = include_cache;
+        }
+
         Analysis {
             import_guard: ImportGuard::default(),
             loader: loader.clone(),
+            context,
         }
+    }
+
+    pub fn into_context(self) -> AnalysisContext {
+        self.context
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct AnalysisContext {
     labels: HashMap<String, Labeled>,
     flat_nodes: HashMap<Path, Arc<Node>>,
+    includes: HashMap<String, PathBuf>,
 }
 
 pub struct AnalysisResult {
-    pub context: AnalysisContext,
     pub diagnostics: Vec<Diagnostic>,
 }
 
 impl AnalysisContext {
+    pub fn get_includes(&self) -> &HashMap<String, PathBuf> {
+        &self.includes
+    }
+
     pub fn get_node_by_label(&self, label: &str) -> Option<&Arc<Node>> {
         match self.labels.get(label) {
             Some(Labeled::Node(node)) => Some(node),
@@ -143,8 +160,6 @@ pub struct FileContext<'a> {
     source: Arc<StdPath>,
     project: &'a Project,
     diagnostics: Vec<Diagnostic>,
-    labels: HashMap<String, Labeled>,
-    flat_nodes: HashMap<Path, Arc<Node>>,
     unresolved_references: Vec<WithToken<Reference>>,
     file_type: FileType,
     is_plugin: bool,
@@ -156,21 +171,11 @@ impl FileContext<'_> {
     pub fn add_diagnostic(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
     }
-
-    pub fn resolve_reference(&self, label: &String) -> Option<(&Path, &Arc<Node>)> {
-        self.flat_nodes
-            .iter()
-            .find(|(_, value)| value.label.as_ref().map(|node| node.item()) == Some(label))
-    }
 }
 
 impl FileContext<'_> {
     pub fn into_result(self) -> AnalysisResult {
         AnalysisResult {
-            context: AnalysisContext {
-                flat_nodes: self.flat_nodes,
-                labels: self.labels,
-            },
             diagnostics: self.diagnostics,
         }
     }
@@ -186,9 +191,7 @@ impl Analysis {
         let mut ctx = FileContext {
             source: file.source.clone(),
             file_type,
-            labels: HashMap::default(),
             diagnostics: Vec::default(),
-            flat_nodes: HashMap::default(),
             unresolved_references: Vec::default(),
             project,
             is_plugin: file_type == FileType::DtSourceOverlay,
@@ -278,10 +281,6 @@ impl Analysis {
                 "Included file contains errors",
             ));
         }
-        if let Some(context) = proj_file.context.as_ref() {
-            ctx.flat_nodes.extend(context.flat_nodes.clone());
-            ctx.labels.extend(context.labels.clone());
-        }
     }
 
     fn unresolved_reference_error(
@@ -309,15 +308,21 @@ impl Analysis {
         reference: &WithToken<Reference>,
     ) -> Path {
         match reference.item() {
-            Reference::Label(label) => match ctx.resolve_reference(label) {
-                None => {
-                    self.unresolved_reference_error(ctx, reference.span(), reference.source());
-                    Path::empty()
+            Reference::Label(label) => {
+                let resolved =
+                    self.context.flat_nodes.iter().find(|(_, value)| {
+                        value.label.as_ref().map(|node| node.item()) == Some(label)
+                    });
+                match resolved {
+                    None => {
+                        self.unresolved_reference_error(ctx, reference.span(), reference.source());
+                        Path::empty()
+                    }
+                    Some((path, _)) => path.clone(),
                 }
-                Some((path, _)) => path.clone(),
-            },
+            }
             Reference::Path(path) => {
-                if !ctx.flat_nodes.contains_key(path) {
+                if !self.context.flat_nodes.contains_key(path) {
                     self.unresolved_reference_error(ctx, reference.span(), reference.source());
                 };
                 path.clone()
@@ -335,7 +340,8 @@ impl Analysis {
         node: Arc<ReferencedNode>,
     ) {
         if let Some(label) = &node.label {
-            ctx.labels
+            self.context
+                .labels
                 .insert(label.item().clone(), Labeled::ReferencedNode(node.clone()));
         }
 
@@ -353,14 +359,14 @@ impl Analysis {
             let span = reference.span();
             let source = reference.source();
             match &reference.item() {
-                Reference::Label(label) => match ctx.labels.get(label) {
+                Reference::Label(label) => match self.context.labels.get(label) {
                     Some(_) => {}
                     None => {
                         self.unresolved_reference_error(ctx, span, source);
                     }
                 },
                 Reference::Path(path) => {
-                    if !ctx.flat_nodes.contains_key(path) {
+                    if !self.context.flat_nodes.contains_key(path) {
                         self.unresolved_reference_error(ctx, span, source);
                     }
                 }
@@ -378,7 +384,7 @@ impl Analysis {
         source: Arc<StdPath>,
         path: &PropertyPath,
     ) {
-        if let Some(node) = ctx.flat_nodes.get(path.node_path()) {
+        if let Some(node) = self.context.flat_nodes.get(path.node_path()) {
             let payload = &node.payload;
             let property_name = path.property_name();
             if !payload.items.iter().any(|item| {
@@ -394,10 +400,11 @@ impl Analysis {
 
     pub fn analyze_node(&mut self, ctx: &mut FileContext<'_>, node: Arc<Node>, path: Path) {
         if let Some(label) = &node.label {
-            ctx.labels
+            self.context
+                .labels
                 .insert(label.item().clone(), Labeled::Node(node.clone()));
         }
-        ctx.flat_nodes.insert(path.clone(), node.clone());
+        self.context.flat_nodes.insert(path.clone(), node.clone());
         self.analyze_node_payload(ctx, &node.payload, path)
     }
 
@@ -442,7 +449,8 @@ impl Analysis {
 
     pub fn analyze_property(&mut self, ctx: &mut FileContext<'_>, property: Arc<Property>) {
         if let Some(label) = &property.label {
-            ctx.labels
+            self.context
+                .labels
                 .insert(label.item().clone(), Labeled::Property(property.clone()));
         }
         for value in &property.values {

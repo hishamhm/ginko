@@ -117,14 +117,12 @@ impl Code {
         let (file, mut parse_diagnostics) = self.parse_ok(Parser::file);
         let fake_project = Project::default();
         let loader = IncludeLoaderGuard::default();
-        let mut analysis = Analysis::new(&loader);
+        let mut analysis = Analysis::new(None, &loader);
         let AnalysisResult {
-            context,
-            mut diagnostics,
-            ..
+            mut diagnostics, ..
         } = analysis.analyze_file(&file, FileType::DtSource, &fake_project);
         diagnostics.append(&mut parse_diagnostics);
-        (diagnostics, context)
+        (diagnostics, analysis.into_context())
     }
 
     fn in_range(&self, span: Span) -> Code {

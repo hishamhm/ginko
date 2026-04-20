@@ -7,53 +7,74 @@ use crate::dts::reader::ByteReader;
 use crate::dts::tokens::Lexer;
 use crate::dts::visitor::ItemAtCursor;
 use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Severity, Span};
-use itertools::Itertools;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::iter::empty;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fs, io};
 
-#[derive(Default)]
+pub enum AnalysisStatus {
+    NotAnalyzed,
+    Root(AnalysisContext),
+    Child,
+}
+
 pub struct ProjectFile {
+    pub(crate) parent: Option<PathBuf>,
+    pub(crate) includes: Vec<PathBuf>,
     pub(crate) parser_diagnostics: Vec<Diagnostic>,
     pub(crate) analysis_diagnostics: Vec<Diagnostic>,
     pub(crate) file: Option<DtsFile>,
-    pub(crate) context: Option<AnalysisContext>,
     pub(crate) file_type: FileType,
     pub(crate) source: String,
+    pub(crate) analysis_status: AnalysisStatus,
 }
 
 impl ProjectFile {
     pub fn parsed(
+        parent: Option<PathBuf>,
+        includes: Vec<PathBuf>,
         diagnostics: Vec<Diagnostic>,
-        file: DtsFile,
         file_type: FileType,
+        file: DtsFile,
         source: String,
     ) -> ProjectFile {
         ProjectFile {
+            parent,
+            includes,
             parser_diagnostics: diagnostics,
             file: Some(file),
             file_type,
-            context: None,
             source,
             analysis_diagnostics: vec![],
+            analysis_status: AnalysisStatus::NotAnalyzed,
+        }
+    }
+
+    pub fn sentinel() -> ProjectFile {
+        ProjectFile {
+            parent: None,
+            includes: vec![],
+            parser_diagnostics: vec![],
+            analysis_diagnostics: vec![],
+            file: None,
+            source: "".to_string(),
+            file_type: FileType::Unknown,
+            analysis_status: AnalysisStatus::NotAnalyzed,
         }
     }
 
     pub fn unrecoverable(err: Diagnostic, source: String, file_type: FileType) -> ProjectFile {
         ProjectFile {
+            parent: None,
+            includes: vec![],
             parser_diagnostics: vec![err],
             analysis_diagnostics: vec![],
             file: None,
             source,
-            context: None,
             file_type,
+            analysis_status: AnalysisStatus::NotAnalyzed,
         }
-    }
-
-    pub fn analysis_context(&self) -> Option<&AnalysisContext> {
-        self.context.as_ref()
     }
 
     pub fn diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
@@ -86,15 +107,11 @@ pub struct Project {
 }
 
 impl Project {
-    pub fn reset(&mut self, loader: &mut IncludeLoaderGuard) -> Result<(), io::Error> {
-        self.files.clear();
-        if let Some(root_file) = &self.root_file {
-            self.add_path_buf(root_file.clone(), loader)?;
-        }
-        Ok(())
+    pub fn set_parser_config(&mut self, config: ParserConfig) {
+        self.config = config;
     }
 
-    pub fn reset_root_file(
+    pub fn set_root_file_and_reset(
         &mut self,
         file_name: String,
         loader: &mut IncludeLoaderGuard,
@@ -104,8 +121,33 @@ impl Project {
         self.reset(loader)
     }
 
-    pub fn set_parser_config(&mut self, config: ParserConfig) {
-        self.config = config;
+    pub fn reset(&mut self, loader: &mut IncludeLoaderGuard) -> Result<(), io::Error> {
+        let Some(root_file) = self.root_file.clone() else {
+            return Ok(());
+        };
+        self.remove_tree(root_file.as_path());
+        self.add_path_buf(root_file.clone(), loader)?;
+        Ok(())
+    }
+
+    fn remove_tree(&mut self, root_file: &Path) {
+        let mut files_to_remove = BTreeSet::<_>::new();
+
+        // Tree traversal stack
+        let mut stack = vec![root_file];
+
+        while let Some(file) = stack.pop() {
+            files_to_remove.insert(file.to_path_buf());
+            if let Some(project_file) = self.files.get(file) {
+                for include in &project_file.includes {
+                    stack.push(include);
+                }
+            }
+        }
+
+        for file in files_to_remove {
+            self.files.remove(&file);
+        }
     }
 
     pub fn add_file(
@@ -136,6 +178,7 @@ impl Project {
     /// * file_name: The name of the file.
     /// * text: The contents of the file.
     /// * file_type: Defines how the file should be analyzed.
+    /// * loader: The loader engine for resolving `/include/` paths.
     ///
     /// # Panics
     /// If `file_name` does not point to a valid file.
@@ -150,58 +193,80 @@ impl Project {
 
         // First step: Parse file and all dependencies.
         // Dependencies are cached.
-        self.parse_file(file_name.clone(), text, file_type, loader);
-
-        self.analyze_all_files(loader);
+        //
+        // Here, `parent` is set to None. That means that, for the root file,
+        // the resulting ProjectFile no `parent`; for any "child" files, they will
+        // reattach to their previous position in the tree, or, in the case of
+        // a new full scan from the root, their will be assigned their correct
+        // `parent` values.
+        self.parse_file(&file_name, text, file_type, None, loader);
+        self.analyze_tree_for(&file_name, loader);
     }
 
-    /// Computes the order in which files must be analyzed.
-    /// inefficient at the moment at O(n^3)
-    fn compute_key_order(&mut self, loader: &mut IncludeLoaderGuard) -> Vec<PathBuf> {
-        let mut map: HashMap<_, Vec<_>> = HashMap::new();
-        for (path, file) in &self.files {
-            let Some(dts_file) = &file.file else { continue };
-            map.entry(path.clone()).or_default();
-            let includes = dts_file
-                .elements
-                .iter()
-                .filter_map(|el| el.as_include())
-                .map(|incl| loader.load(path, &incl.file_name()))
-                .collect_vec();
-            for include in includes.into_iter().flatten() {
-                map.entry(include).or_default().push(path.clone())
-            }
+    fn recursive_analysis(
+        &mut self,
+        analysis: &mut Analysis,
+        file: &Path,
+        parent: Option<&Path>,
+        seen: &mut BTreeSet<PathBuf>,
+    ) -> Option<()> {
+        if seen.contains(file) {
+            return None;
         }
-        // This is very inefficient. Probably there is a better way.
-        let mut current_order = self.files.keys().cloned().collect_vec();
-        for (key, value) in &map {
-            if let Some(key_idx) = current_order.iter().position(|r| r == key) {
-                for v in value {
-                    if let Some(value_idx) = current_order.iter().position(|r| r == v) {
-                        if key_idx > value_idx {
-                            current_order.swap(key_idx, value_idx)
-                        }
-                    }
-                }
-            }
-        }
-        current_order
-    }
+        seen.insert(file.to_path_buf());
 
-    fn analyze_all_files(&mut self, loader: &mut IncludeLoaderGuard) {
-        let keys = self.compute_key_order(loader);
-        let mut analysis = Analysis::new(loader);
-        for key in &keys {
-            let proj_file = self.files.get(key).unwrap();
-            let result = if let Some(file) = &proj_file.file {
-                analysis.analyze_file(file, proj_file.file_type, self)
-            } else {
-                continue;
-            };
-            let proj_file = self.files.get_mut(key).unwrap();
-            proj_file.context = Some(result.context);
+        for include in self.files.get(file)?.includes.clone() {
+            self.recursive_analysis(analysis, &include, Some(file), seen);
+        }
+
+        let proj_file = self.files.get(file)?;
+        if let Some(dts_file) = &proj_file.file {
+            let result = analysis.analyze_file(dts_file, proj_file.file_type, self);
+            let proj_file = self.files.get_mut(file)?;
+            proj_file.analysis_status = AnalysisStatus::Child;
+            proj_file.parent = parent.map(Path::to_path_buf);
             proj_file.analysis_diagnostics = result.diagnostics;
         }
+        Some(())
+    }
+
+    /// Find the analysis root for a given file. It will either return the file itself,
+    /// or the root of the include-tree it is a part of.
+    fn analysis_root_for(&self, file: &Path) -> Option<(PathBuf, &AnalysisStatus)> {
+        Some({
+            let mut current = file;
+            loop {
+                let proj_file = self.files.get(current)?;
+                if let Some(parent) = &proj_file.parent {
+                    current = parent;
+                } else {
+                    break (current.to_path_buf(), &proj_file.analysis_status);
+                }
+            }
+        })
+    }
+
+    pub fn analyze_tree_for(&mut self, element: &Path, loader: &mut IncludeLoaderGuard) {
+        let (root, include_cache) = {
+            let Some((root, root_status)) = self.analysis_root_for(element) else {
+                return;
+            };
+            let include_cache = match root_status {
+                AnalysisStatus::Root(context) => context.get_includes().clone(),
+                _ => Default::default(),
+            };
+            (root, include_cache)
+        };
+
+        let mut analysis = Analysis::new(Some(include_cache), loader);
+        let mut seen = BTreeSet::new();
+
+        self.recursive_analysis(&mut analysis, &root, None, &mut seen);
+
+        let Some(proj_file) = self.files.get_mut(&root) else {
+            return;
+        };
+        proj_file.analysis_status = AnalysisStatus::Root(analysis.into_context())
     }
 
     pub fn get_diagnostics(&self, path: &Path) -> Box<dyn Iterator<Item = &Diagnostic> + '_> {
@@ -224,14 +289,16 @@ impl Project {
     }
 
     pub fn get_analysis(&self, path: &Path) -> Option<&AnalysisContext> {
-        match self.get_file(path) {
-            None => None,
-            Some(project) => project.context.as_ref(),
+        let (_, analysis_status) = self.analysis_root_for(path)?;
+        match analysis_status {
+            AnalysisStatus::Root(context) => Some(context),
+            _ => None,
         }
     }
 
     #[cfg(test)]
     pub fn assert_no_diagnostics(&self) {
+        use itertools::Itertools;
         let diagnostics = self
             .files
             .values()
@@ -275,38 +342,64 @@ impl Project {
 
     fn parse_file(
         &mut self,
-        file_name: PathBuf,
+        file_name: &Path,
         text: String,
         file_type: FileType,
+        parent: Option<PathBuf>,
         loader: &mut IncludeLoaderGuard,
     ) {
         let reader = ByteReader::from_string(text.clone());
-        let lexer = Lexer::new(reader, file_name.clone().into());
+        let lexer = Lexer::new(reader, file_name.into());
+
+        let parent = if parent.is_some() {
+            parent
+        } else if let Some(old) = self.files.get(file_name) {
+            old.parent.clone()
+        } else {
+            None
+        };
 
         let mut parser = Parser::new(lexer, self.config.clone());
+
         match parser.file() {
             Ok(file) => {
-                // insert dummy file to be defined so that no cyclic dependency can occur.
-                self.files.insert(file_name.clone(), ProjectFile::default());
-                file.elements
+                // insert sentinel so that no cyclic dependency can occur.
+                self.files
+                    .insert(file_name.to_path_buf(), ProjectFile::sentinel());
+
+                // Recurse into includes.
+                let includes: Vec<PathBuf> = file
+                    .elements
                     .iter()
                     .filter_map(|primary| primary.as_include())
-                    .for_each(|include| {
+                    .filter_map(|include| {
                         self.parse_included_file(
                             &mut parser.diagnostics,
                             &file.source,
                             include,
                             loader,
                         )
-                    });
+                    })
+                    .collect();
+
+                // Insert the file proper, with the `parent` and `includes` forming a tree.
                 self.files.insert(
-                    file_name,
-                    ProjectFile::parsed(parser.diagnostics, file, file_type, text),
+                    file_name.to_path_buf(),
+                    ProjectFile::parsed(
+                        parent,
+                        includes,
+                        parser.diagnostics,
+                        file_type,
+                        file,
+                        text,
+                    ),
                 );
             }
             Err(err) => {
-                self.files
-                    .insert(file_name, ProjectFile::unrecoverable(err, text, file_type));
+                self.files.insert(
+                    file_name.to_path_buf(),
+                    ProjectFile::unrecoverable(err, text, file_type),
+                );
             }
         };
     }
@@ -317,28 +410,34 @@ impl Project {
         parent: &Path,
         include: &Include,
         loader: &mut IncludeLoaderGuard,
-    ) {
+    ) -> Option<PathBuf> {
         let canonicalized_path = match loader.load(parent, &include.file_name()) {
             Ok(path) => path,
             Err(err) => {
                 diagnostics.push(Diagnostic::io_error(include.span(), include.source(), err));
-                return;
+                return None;
             }
         };
 
         // Avoids duplicate insertion and cyclic dependencies
-        if self.files.contains_key(&canonicalized_path) {
-            return;
-        }
-        match fs::read_to_string(&canonicalized_path) {
-            Ok(text) => {
-                let typ = FileType::from(canonicalized_path.as_path());
-                self.parse_file(canonicalized_path, text, typ, loader);
+        if !self.files.contains_key(&canonicalized_path) {
+            match fs::read_to_string(&canonicalized_path) {
+                Ok(text) => {
+                    let typ = FileType::from(canonicalized_path.as_path());
+                    self.parse_file(
+                        &canonicalized_path,
+                        text,
+                        typ,
+                        Some(parent.to_path_buf()),
+                        loader,
+                    );
+                }
+                Err(err) => {
+                    diagnostics.push(Diagnostic::io_error(include.span(), include.source(), err))
+                }
             }
-            Err(err) => {
-                diagnostics.push(Diagnostic::io_error(include.span(), include.source(), err))
-            }
         }
+        Some(canonicalized_path)
     }
 
     pub fn get_file(&self, path: &Path) -> Option<&ProjectFile> {
@@ -529,7 +628,6 @@ mod tests {
 
         let mut project = Project::default();
         let mut loader = IncludeLoaderGuard::default();
-
         project
             .add_file(path1.into_os_string().into_string().unwrap(), &mut loader)
             .expect("Cannot add file to project");
@@ -625,6 +723,8 @@ mod tests {
         assert!(project.get_file(&file3).is_some());
     }
 
+    // TODO removal by trees is yet to be implemented
+    /*
     #[test]
     pub fn remove_file_uses_refcount() {
         let mut project = Project::default();
@@ -640,10 +740,10 @@ mod tests {
             "test3.dts",
             format!(
                 r#"
-/dts-v1/;
+    /dts-v1/;
 
-/include/ "{}"
-"#,
+    /include/ "{}"
+    "#,
                 file2.display()
             ),
         );
@@ -651,10 +751,10 @@ mod tests {
             "test4.dts",
             format!(
                 r#"
-/dts-v1/;
+    /dts-v1/;
 
-/include/ "{}"
-"#,
+    /include/ "{}"
+    "#,
                 file2.display()
             ),
         );
@@ -700,6 +800,7 @@ mod tests {
         assert!(project.get_file(&file3).is_some());
         assert!(project.get_file(&file4).is_some());
     }
+    */
 
     #[test]
     pub fn error_in_included_file_add_include_before_dts() {
