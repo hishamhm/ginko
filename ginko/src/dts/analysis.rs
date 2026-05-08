@@ -545,6 +545,60 @@ mod test {
     use assert_unordered::assert_eq_unordered;
 
     #[test]
+    pub fn test_duplicate_v1_header() {
+        let code = Code::with_config(
+            "\
+/dts-v1/;
+
+/{
+};
+
+/dts-v1/;
+",
+            ParserConfig {
+                unlimited_property_length: false,
+            },
+        );
+        let (diagnostics, _) = code.get_analyzed_file();
+        assert_eq_unordered!(
+            diagnostics,
+            vec![Diagnostic::new(
+                Position::new(5, 0).char_to(8),
+                code.source(),
+                ErrorCode::DuplicateDirective,
+                "Duplicate dts-v1 version header"
+            ),]
+        )
+    }
+
+    #[test]
+    pub fn test_misplaced_header() {
+        let code = Code::with_config(
+            "\
+/{
+};
+
+/memreserve/ 0x10000000 0x4000;
+
+/dts-v1/;
+",
+            ParserConfig {
+                unlimited_property_length: false,
+            },
+        );
+        let (diagnostics, _) = code.get_analyzed_file();
+        assert_eq_unordered!(
+            diagnostics,
+            vec![Diagnostic::new(
+                Position::new(5, 0).char_to(8),
+                code.source(),
+                ErrorCode::MisplacedDtsHeader,
+                "dts-v1 header must be placed on top of the file"
+            ),]
+        )
+    }
+
+    #[test]
     pub fn test_illegal_char_in_label() {
         let code = Code::with_config(
             "\
