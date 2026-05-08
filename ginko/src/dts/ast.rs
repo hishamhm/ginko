@@ -331,6 +331,12 @@ pub struct Property {
     pub end: Token,
 }
 
+impl HasSource for Property {
+    fn source(&self) -> Arc<StdPath> {
+        self.end.source()
+    }
+}
+
 impl HasSpan for Property {
     fn span(&self) -> Span {
         self.label

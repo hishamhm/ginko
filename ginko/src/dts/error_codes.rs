@@ -28,6 +28,8 @@ pub enum ErrorCode {
     IOError,
     ErrorsInInclude,
     CyclicDependencyError,
+    ExpectedU32,
+    ExpectedString,
 }
 
 /// The `SeverityMap` maps error codes to severities.
@@ -66,6 +68,8 @@ impl Default for SeverityMap {
             | IncorrectDirective => Severity::Error,
             NameTooLong
             | NonStringInCompatible
+            | ExpectedU32
+            | ExpectedString
             | DuplicateDirective => Severity::Warning
         };
         SeverityMap { inner: map }
