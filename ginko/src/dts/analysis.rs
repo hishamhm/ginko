@@ -416,7 +416,7 @@ impl Analysis {
     ) {
         for item in &payload.items {
             match item {
-                NodeItem::Property(property) => self.analyze_property(ctx, property.clone()),
+                NodeItem::Property(property) => self.analyze_property(ctx, property.clone(), &path),
                 NodeItem::Node(node) => {
                     self.analyze_node(ctx, node.clone(), path.with_child(node.name.item().clone()))
                 }
@@ -426,8 +426,8 @@ impl Analysis {
         }
     }
 
-    fn check_is_string_list(&mut self, ctx: &mut FileContext<'_>, values: &Vec<PropertyValue>) {
-        for value in values {
+    fn check_is_string_list(&mut self, ctx: &mut FileContext<'_>, property: &Property) {
+        for value in &property.values {
             if !matches!(value, PropertyValue::String(_)) {
                 ctx.add_diagnostic(Diagnostic::new(
                     value.span(),
@@ -439,15 +439,44 @@ impl Analysis {
         }
     }
 
-    fn check_is_single_string(&mut self, _ctx: &mut FileContext<'_>, values: &[PropertyValue]) {
-        if values.len() != 1 {}
+    fn check_is_single_string(&mut self, ctx: &mut FileContext<'_>, property: &Property) {
+        if property.values.len() == 1 {
+            if let PropertyValue::String(_) = &property.values[0] {
+                return;
+            }
+        }
+        ctx.add_diagnostic(Diagnostic::new(
+            property.span(),
+            property.source(),
+            ErrorCode::ExpectedString,
+            "property should only contain a single string",
+        ))
     }
 
-    fn check_is_single_u32(&mut self, _ctx: &mut FileContext<'_>, values: &[PropertyValue]) {
-        if values.len() != 1 {}
+    fn check_is_single_u32(&mut self, ctx: &mut FileContext<'_>, property: &Property) {
+        if property.values.len() == 1 {
+            if let PropertyValue::Cells(_, cells, _) = &property.values[0] {
+                if cells.len() == 1 {
+                    if let Cell::Number(_) = cells[0] {
+                        return;
+                    }
+                }
+            }
+        }
+        ctx.add_diagnostic(Diagnostic::new(
+            property.span(),
+            property.source(),
+            ErrorCode::ExpectedU32,
+            "property should only contain a single number",
+        ))
     }
 
-    pub fn analyze_property(&mut self, ctx: &mut FileContext<'_>, property: Arc<Property>) {
+    pub fn analyze_property(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        property: Arc<Property>,
+        path: &Path,
+    ) {
         if let Some(label) = &property.label {
             self.context
                 .labels
@@ -458,9 +487,13 @@ impl Analysis {
         }
 
         match property.name.as_str() {
-            "compatible" => self.check_is_string_list(ctx, &property.values),
-            "model" => self.check_is_single_string(ctx, &property.values),
-            "phandle" => self.check_is_single_u32(ctx, &property.values),
+            "compatible" => self.check_is_string_list(ctx, &property),
+            "model" => {
+                if *path == Path::empty() {
+                    self.check_is_single_string(ctx, &property);
+                }
+            }
+            "phandle" => self.check_is_single_u32(ctx, &property),
             _ => {}
         }
     }
@@ -855,6 +888,49 @@ mod test {
                     code.source(),
                     ErrorCode::UnresolvedReference,
                     "Reference cannot be resolved"
+                )
+            ]
+        )
+    }
+
+    #[test]
+    pub fn schema_diagnostics() {
+        let code = Code::new(
+            r#"
+/dts-v1/;
+
+/ {
+    compatible = <0x0>;
+    model = "foo", "bar";
+    phandle = "wat";
+
+    ignore {
+        model = "foo", "bar";
+    };
+};
+"#,
+        );
+        let (diagnostics, _) = code.get_analyzed_file();
+        assert_eq_unordered!(
+            diagnostics,
+            vec![
+                Diagnostic::new(
+                    code.s1("<0x0>").span(),
+                    code.source(),
+                    ErrorCode::NonStringInCompatible,
+                    "compatible property should only contain strings"
+                ),
+                Diagnostic::new(
+                    code.s1("model = \"foo\", \"bar\";").span(),
+                    code.source(),
+                    ErrorCode::ExpectedString,
+                    "property should only contain a single string"
+                ),
+                Diagnostic::new(
+                    code.s1("phandle = \"wat\";").span(),
+                    code.source(),
+                    ErrorCode::ExpectedU32,
+                    "property should only contain a single number"
                 )
             ]
         )
