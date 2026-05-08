@@ -1,23 +1,54 @@
 use itertools::Itertools;
 
 use crate::dts::ast::{
-    AnyDirective, Cell, DtsFile, Include, Node, NodeItem, NodePayload, Path, Primary, Property,
-    PropertyPath, PropertyValue, Reference, ReferencedNode, WithToken,
+    AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node, NodeItem,
+    NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue, Reference,
+    ReferencedNode, WithToken, ABSOLUTE_ROOT,
 };
 use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
 use crate::dts::import_guard::ImportGuard;
 use crate::dts::loader::IncludeLoaderGuard;
+use crate::dts::visitor::ReferenceContext;
 use crate::dts::{Diagnostic, FileType, Position, Project};
 use std::collections::HashMap;
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
+fn find_child(payload: &NodePayload, path_elements: &[NodeName]) -> Option<Arc<Node>> {
+    if path_elements.is_empty() {
+        return None;
+    }
+    let last = path_elements.len() - 1;
+    let mut current = payload;
+    for (i, element) in path_elements.iter().enumerate() {
+        for item in &current.items {
+            if let NodeItem::Node(node) = item {
+                if node.name.item() == element {
+                    if i == last {
+                        return Some(node.clone());
+                    } else {
+                        current = &node.payload;
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+fn find_node_child(node: &Arc<Node>, path_elements: &[NodeName]) -> Option<Arc<Node>> {
+    if path_elements.is_empty() {
+        return Some(node.clone());
+    }
+    find_child(&node.payload, path_elements)
+}
+
 /// Something that can be labeled.
 /// Used when analyzing a device-tree
 #[derive(Clone, Debug)]
 enum Labeled {
-    Node(Arc<Node>),
+    Node(Arc<Node>, AbsolutePath),
     #[allow(unused)]
     Property(Arc<Property>),
     ReferencedNode(Arc<ReferencedNode>),
@@ -55,7 +86,7 @@ impl Analysis {
 #[derive(Clone, Default)]
 pub struct AnalysisContext {
     labels: HashMap<String, Labeled>,
-    flat_nodes: HashMap<Path, Arc<Node>>,
+    flat_nodes: HashMap<AbsolutePath, Arc<Node>>,
     includes: HashMap<String, PathBuf>,
 }
 
@@ -70,20 +101,44 @@ impl AnalysisContext {
 
     pub fn get_node_by_label(&self, label: &str) -> Option<&Arc<Node>> {
         match self.labels.get(label) {
-            Some(Labeled::Node(node)) => Some(node),
+            Some(Labeled::Node(node, _)) => Some(node),
             _ => None,
         }
     }
 
-    pub fn get_node_by_path(&self, path: &Path) -> Option<&Arc<Node>> {
-        self.flat_nodes.get(path)
+    fn node_from_ctx<'a>(&'a self, ctx: &ReferenceContext<'a>) -> &'a Node {
+        match ctx {
+            ReferenceContext::Root => self
+                .flat_nodes
+                .get(&ABSOLUTE_ROOT)
+                .map(|v| &**v)
+                .expect("root node must exist"),
+            ReferenceContext::Node(node) => node,
+        }
     }
 
-    pub fn get_referenced(&self, reference: &Reference) -> Option<&Arc<Node>> {
-        match reference {
-            Reference::Label(label) => self.get_node_by_label(label),
-            Reference::Path(path) => self.get_node_by_path(path),
-            Reference::PropertyPath(path) => self.get_node_by_path(path.node_path()),
+    pub fn get_node_by_path(&self, path: &Path, ctx: &ReferenceContext<'_>) -> Option<Arc<Node>> {
+        match path {
+            Path::Absolute(absolute_path) => self.flat_nodes.get(absolute_path).cloned(),
+            Path::DotRelative(_) => find_child(&self.node_from_ctx(ctx).payload, path.elements()),
+            Path::LabelRelative(label_relative_path) => {
+                match self.labels.get(&label_relative_path.label)? {
+                    Labeled::Node(node, _) => find_node_child(node, path.elements()),
+                    Labeled::Property(_) => None,
+                    Labeled::ReferencedNode(referenced_node) => {
+                        if !path.elements().is_empty() {
+                            let found = find_child(&referenced_node.payload, path.elements());
+                            if found.is_some() {
+                                return found;
+                            }
+                        }
+                        match self.labels.get(&label_relative_path.label)? {
+                            Labeled::Node(node, _) => find_node_child(node, path.elements()),
+                            _ => None,
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -100,10 +155,11 @@ impl AnalysisContext {
             .map(|label| (label.span(), label.source()))
     }
 
-    fn get_property_by_property_path(&self, path: &PropertyPath) -> Option<Arc<Property>> {
-        let node = self.get_node_by_path(path.node_path())?;
-        let payload = &node.payload;
-        let property_name = path.property_name();
+    fn get_property_from_payload(
+        &self,
+        property_name: &str,
+        payload: &NodePayload,
+    ) -> Option<Arc<Property>> {
         for item in &payload.items {
             if let NodeItem::Property(property) = item {
                 if property.name.item() == property_name {
@@ -114,27 +170,45 @@ impl AnalysisContext {
         None
     }
 
-    pub fn get_position(&self, reference: &Reference) -> Option<(Span, Arc<std::path::Path>)> {
+    fn get_property_from_property_path(
+        &self,
+        path: &PropertyPath,
+        ctx: &ReferenceContext<'_>,
+    ) -> Option<Arc<Property>> {
+        let node = self.get_node_by_path(path.node_path(), ctx)?;
+        let payload = &node.payload;
+        self.get_property_from_payload(path.property_name(), payload)
+    }
+
+    pub fn get_position(
+        &self,
+        reference: &Reference,
+        ctx: &ReferenceContext<'_>,
+    ) -> Option<(Span, Arc<std::path::Path>)> {
         match reference {
             Reference::Label(label) => match self.labels.get(label) {
-                Some(Labeled::Node(node)) => Some(self.get_node_position(node)),
+                Some(Labeled::Node(node, _)) => Some(self.get_node_position(node)),
                 Some(Labeled::ReferencedNode(node)) => self.get_referenced_node_position(node),
                 _ => None,
             },
             Reference::Path(path) => self
-                .get_node_by_path(path)
-                .map(|node| self.get_node_position(node)),
+                .get_node_by_path(path, ctx)
+                .map(|node| self.get_node_position(&node)),
             Reference::PropertyPath(path) => {
-                let property = self.get_property_by_property_path(path)?;
+                let property = self.get_property_from_property_path(path, ctx)?;
                 Some((property.name.span(), property.name.source()))
             }
         }
     }
 
-    pub fn get_referred(&self, reference: &Reference) -> Option<String> {
+    pub fn get_referred(
+        &self,
+        reference: &Reference,
+        ctx: &ReferenceContext<'_>,
+    ) -> Option<String> {
         match reference {
             Reference::Label(label) => match self.labels.get(label) {
-                Some(Labeled::Node(node)) => {
+                Some(Labeled::Node(node, _)) => {
                     let mut name = node.name.name.clone();
                     if let Some(unit_address) = &node.name.unit_address {
                         name += "@";
@@ -146,10 +220,10 @@ impl AnalysisContext {
                 _ => None,
             },
             Reference::Path(path) => self
-                .get_node_by_path(path)
+                .get_node_by_path(path, ctx)
                 .map(|node| node.name.name.clone()),
             Reference::PropertyPath(path) => {
-                let property = self.get_property_by_property_path(path)?;
+                let property = self.get_property_from_property_path(path, ctx)?;
                 Some(property.values.iter().map(|v| v.to_string()).join(", "))
             }
         }
@@ -160,7 +234,7 @@ pub struct FileContext<'a> {
     source: Arc<StdPath>,
     project: &'a Project,
     diagnostics: Vec<Diagnostic>,
-    unresolved_references: Vec<WithToken<Reference>>,
+    references_to_be_checked: Vec<WithToken<Reference>>,
     file_type: FileType,
     is_plugin: bool,
     first_non_include: bool,
@@ -192,7 +266,7 @@ impl Analysis {
             source: file.source.clone(),
             file_type,
             diagnostics: Vec::default(),
-            unresolved_references: Vec::default(),
+            references_to_be_checked: Vec::default(),
             project,
             is_plugin: file_type == FileType::DtSourceOverlay,
             dts_header_seen: false,
@@ -225,11 +299,11 @@ impl Analysis {
                     }
                     AnyDirective::OmitIfNoRef(..) => ctx.first_non_include = true,
                     AnyDirective::DeletedNode(_, reference) => {
-                        self.resolve_reference(&mut ctx, reference);
+                        self.get_absolute_path_from_reference_in_root_ctx(&mut ctx, reference);
                     }
                 },
                 Primary::Root(root_node) => {
-                    self.analyze_node(&mut ctx, root_node.clone(), Path::empty());
+                    self.analyze_node(&mut ctx, root_node.clone(), &ABSOLUTE_ROOT);
                     ctx.first_non_include = true
                 }
                 Primary::ReferencedNode(referenced_node) => {
@@ -302,36 +376,83 @@ impl Analysis {
         }
     }
 
-    fn resolve_reference(
+    fn get_valid_absolute_path(&self, absolute_path: &AbsolutePath) -> Option<AbsolutePath> {
+        if self.context.flat_nodes.contains_key(absolute_path) {
+            Some(absolute_path.clone())
+        } else {
+            None
+        }
+    }
+
+    fn get_valid_absolute_path_from_label_relative_path(
+        &self,
+        label_relative_path: &LabelRelativePath,
+    ) -> Option<AbsolutePath> {
+        let (node, label_absolute_path) = match self.context.labels.get(&label_relative_path.label)
+        {
+            Some(Labeled::Node(node, path)) => Some((node, path)),
+            _ => None,
+        }?;
+
+        let elements = label_relative_path.elements();
+        find_node_child(node, elements)
+            .is_some()
+            .then(|| label_absolute_path.with_children(elements))
+    }
+
+    fn get_absolute_path_from_path_in_root_ctx(&self, path: &Path) -> Option<AbsolutePath> {
+        match path {
+            Path::Absolute(absolute_path) => self.get_valid_absolute_path(absolute_path),
+            Path::DotRelative(_dot_relative_path) => {
+                // dot-relative-paths do not resolve in a root ctx
+                None
+            }
+            Path::LabelRelative(label_relative_path) => {
+                self.get_valid_absolute_path_from_label_relative_path(label_relative_path)
+            }
+        }
+    }
+
+    fn get_absolute_path_from_property_path_in_root_ctx(
+        &self,
+        ppath: &PropertyPath,
+    ) -> Option<AbsolutePath> {
+        let absolute_path = self.get_absolute_path_from_path_in_root_ctx(ppath.node_path())?;
+        let node = self.context.flat_nodes.get(&absolute_path)?;
+        let payload = &node.payload;
+        let property_name = ppath.property_name();
+        if !payload.items.iter().any(|item| {
+            matches!(item, NodeItem::Property(property)
+                if property.name.item() == property_name)
+        }) {
+            return None;
+        }
+
+        Some(absolute_path)
+    }
+
+    fn get_absolute_path_from_reference_in_root_ctx(
         &mut self,
         ctx: &mut FileContext<'_>,
         reference: &WithToken<Reference>,
-    ) -> Path {
-        match reference.item() {
+    ) -> Option<AbsolutePath> {
+        let path = match reference.item() {
             Reference::Label(label) => {
-                let resolved =
-                    self.context.flat_nodes.iter().find(|(_, value)| {
-                        value.label.as_ref().map(|node| node.item()) == Some(label)
-                    });
-                match resolved {
-                    None => {
-                        self.unresolved_reference_error(ctx, reference.span(), reference.source());
-                        Path::empty()
-                    }
-                    Some((path, _)) => path.clone(),
+                if let Some(Labeled::Node(_node, absolute_path)) = self.context.labels.get(label) {
+                    Some(absolute_path.clone())
+                } else {
+                    None
                 }
             }
-            Reference::Path(path) => {
-                if !self.context.flat_nodes.contains_key(path) {
-                    self.unresolved_reference_error(ctx, reference.span(), reference.source());
-                };
-                path.clone()
+            Reference::Path(path) => self.get_absolute_path_from_path_in_root_ctx(path),
+            Reference::PropertyPath(ppath) => {
+                self.get_absolute_path_from_property_path_in_root_ctx(ppath)
             }
-            Reference::PropertyPath(path) => {
-                self.resolve_property_path(ctx, reference.span(), reference.source(), path);
-                path.node_path().clone()
-            }
+        };
+        if path.is_none() {
+            self.unresolved_reference_error(ctx, reference.span(), reference.source());
         }
+        path
     }
 
     pub fn analyze_referenced_node(
@@ -345,64 +466,43 @@ impl Analysis {
                 .insert(label.item().clone(), Labeled::ReferencedNode(node.clone()));
         }
 
-        let path = if ctx.file_type == FileType::DtSource {
-            self.resolve_reference(ctx, &node.reference)
-        } else {
-            // This is an include; simply assume the 'root' path
-            Path::empty()
-        };
-        self.analyze_node_payload(ctx, &node.payload, path);
+        let path = self
+            .get_absolute_path_from_reference_in_root_ctx(ctx, &node.reference)
+            .unwrap_or(ABSOLUTE_ROOT.clone());
+
+        self.analyze_node_payload(ctx, &node.payload, &path);
     }
 
     pub fn resolve_references(&self, ctx: &mut FileContext<'_>) {
-        for reference in ctx.unresolved_references.clone() {
+        for reference in ctx.references_to_be_checked.clone() {
             let span = reference.span();
             let source = reference.source();
-            match &reference.item() {
-                Reference::Label(label) => match self.context.labels.get(label) {
-                    Some(_) => {}
-                    None => {
-                        self.unresolved_reference_error(ctx, span, source);
-                    }
-                },
+            let ok = match &reference.item() {
+                Reference::Label(label) => self.context.labels.contains_key(label),
                 Reference::Path(path) => {
-                    if !self.context.flat_nodes.contains_key(path) {
-                        self.unresolved_reference_error(ctx, span, source);
-                    }
+                    self.get_absolute_path_from_path_in_root_ctx(path).is_some()
                 }
-                Reference::PropertyPath(path) => {
-                    self.resolve_property_path(ctx, span, source, path);
-                }
-            }
-        }
-    }
-
-    fn resolve_property_path(
-        &self,
-        ctx: &mut FileContext<'_>,
-        span: Span,
-        source: Arc<StdPath>,
-        path: &PropertyPath,
-    ) {
-        if let Some(node) = self.context.flat_nodes.get(path.node_path()) {
-            let payload = &node.payload;
-            let property_name = path.property_name();
-            if !payload.items.iter().any(|item| {
-                matches!(item, NodeItem::Property(property)
-                    if property.name.item() == property_name)
-            }) {
+                Reference::PropertyPath(ppath) => self
+                    .get_absolute_path_from_property_path_in_root_ctx(ppath)
+                    .is_some(),
+            };
+            if !ok {
                 self.unresolved_reference_error(ctx, span, source);
             }
-        } else {
-            self.unresolved_reference_error(ctx, span, source);
         }
     }
 
-    pub fn analyze_node(&mut self, ctx: &mut FileContext<'_>, node: Arc<Node>, path: Path) {
+    pub fn analyze_node(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        node: Arc<Node>,
+        path: &AbsolutePath,
+    ) {
         if let Some(label) = &node.label {
-            self.context
-                .labels
-                .insert(label.item().clone(), Labeled::Node(node.clone()));
+            self.context.labels.insert(
+                label.item().clone(),
+                Labeled::Node(node.clone(), path.clone()),
+            );
         }
         self.context.flat_nodes.insert(path.clone(), node.clone());
         self.analyze_node_payload(ctx, &node.payload, path)
@@ -412,14 +512,18 @@ impl Analysis {
         &mut self,
         ctx: &mut FileContext<'_>,
         payload: &NodePayload,
-        path: Path,
+        path: &AbsolutePath,
     ) {
         for item in &payload.items {
             match item {
-                NodeItem::Property(property) => self.analyze_property(ctx, property.clone()),
-                NodeItem::Node(node) => {
-                    self.analyze_node(ctx, node.clone(), path.with_child(node.name.item().clone()))
+                NodeItem::Property(property) => {
+                    self.analyze_property(ctx, property.clone(), payload)
                 }
+                NodeItem::Node(node) => self.analyze_node(
+                    ctx,
+                    node.clone(),
+                    &path.with_child(node.name.item().clone()),
+                ),
                 NodeItem::DeletedNode(..) => {}
                 NodeItem::DeletedProperty(..) => {}
             }
@@ -471,14 +575,19 @@ impl Analysis {
         ))
     }
 
-    pub fn analyze_property(&mut self, ctx: &mut FileContext<'_>, property: Arc<Property>) {
+    pub fn analyze_property(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        property: Arc<Property>,
+        in_node: &NodePayload,
+    ) {
         if let Some(label) = &property.label {
             self.context
                 .labels
                 .insert(label.item().clone(), Labeled::Property(property.clone()));
         }
         for value in &property.values {
-            self.analyze_property_value(ctx, value)
+            self.analyze_property_value(ctx, value, in_node)
         }
 
         match property.name.as_str() {
@@ -489,24 +598,29 @@ impl Analysis {
         }
     }
 
-    pub fn analyze_property_value(&mut self, ctx: &mut FileContext<'_>, value: &PropertyValue) {
+    pub fn analyze_property_value(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        value: &PropertyValue,
+        in_node: &NodePayload,
+    ) {
         match value {
             PropertyValue::String(_) => {}
             PropertyValue::ByteStrings(..) => {}
             PropertyValue::Cells(_, cells, _) => {
                 for cell in cells {
-                    self.analyze_cell(ctx, cell)
+                    self.analyze_cell(ctx, cell, in_node)
                 }
             }
-            PropertyValue::Reference(reference) => self.analyze_reference(ctx, reference),
-            PropertyValue::Incbin(_, include, _) => self.analyze_incbin(ctx, include),
+            PropertyValue::Reference(reference) => self.analyze_reference(ctx, reference, in_node),
+            PropertyValue::Incbin(_, include, _) => self.analyze_incbin(ctx, include, value.span()),
         }
     }
 
-    pub fn analyze_cell(&mut self, ctx: &mut FileContext<'_>, value: &Cell) {
+    pub fn analyze_cell(&mut self, ctx: &mut FileContext<'_>, value: &Cell, in_node: &NodePayload) {
         match value {
             Cell::Number(_) => {}
-            Cell::Reference(reference) => self.analyze_reference(ctx, reference),
+            Cell::Reference(reference) => self.analyze_reference(ctx, reference, in_node),
             Cell::Expression(_) => {}
         }
     }
@@ -515,23 +629,59 @@ impl Analysis {
         &mut self,
         ctx: &mut FileContext<'_>,
         reference: &WithToken<Reference>,
+        in_node: &NodePayload,
     ) {
-        ctx.unresolved_references.push(reference.clone())
+        // Check dot-relative references in context.
+        //
+        // We only produce a bool result here for references containing dot-relative paths.
+        // For everything else, we will push the list of references to be checked later,
+        // at the end of the analysis.
+        let ok: Option<bool> = match reference.item() {
+            Reference::Path(Path::DotRelative(dot_relative)) => {
+                Some(find_child(in_node, dot_relative.elements()).is_some())
+            }
+            Reference::PropertyPath(property_path) => match property_path.node_path() {
+                Path::DotRelative(dot_relative) => {
+                    Some(match find_child(in_node, dot_relative.elements()) {
+                        Some(child) => {
+                            let name = property_path.property_name();
+                            self.context
+                                .get_property_from_payload(name, &child.payload)
+                                .is_some()
+                        }
+                        None => false,
+                    })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+
+        if let Some(ok) = ok {
+            // Push a diagnostic if we got an error.
+            if !ok {
+                self.unresolved_reference_error(ctx, reference.span(), reference.source());
+            }
+        } else {
+            // Check all other kinds later.
+            ctx.references_to_be_checked.push(reference.clone());
+        }
     }
 
-    pub fn analyze_incbin(&mut self, ctx: &mut FileContext<'_>, include: &Include) {
+    pub fn analyze_incbin(&mut self, ctx: &mut FileContext<'_>, include: &Include, span: Span) {
         if let Err(err) = self.loader.load(&ctx.source, &include.file_name()) {
-            ctx.add_diagnostic(Diagnostic::io_error(include.span(), include.source(), err));
+            ctx.add_diagnostic(Diagnostic::io_error(span, include.source(), err));
         }
     }
 }
 
 #[cfg(test)]
 mod test {
-    use crate::dts::ast::Path;
+    use crate::dts::ast::{Path, PropertyPath};
     use crate::dts::data::{HasSource, HasSpan, Position};
     use crate::dts::error_codes::ErrorCode;
     use crate::dts::test::Code;
+    use crate::dts::visitor::ReferenceContext;
     use crate::dts::{Diagnostic, ParserConfig};
     use assert_unordered::assert_eq_unordered;
 
@@ -699,6 +849,9 @@ mod test {
         ref-to-node1-path = &{/some_node};
         ref-to-node4-path = &{/some_other_node/some_node};
         ref-to-node3-path = &{/node3};
+        dot-ref-to-node4-path = &{./some_node};
+        dot-ref-to-bad-path = &{./some_node/missing};
+        ref-to-label = &{node1};
         node4: some_node {
             self-reference = &node4;
         };
@@ -717,6 +870,12 @@ mod test {
                 ),
                 Diagnostic::new(
                     code.s1("&{/node3}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+                Diagnostic::new(
+                    code.s1("&{./some_node/missing}").span(),
                     code.source(),
                     ErrorCode::UnresolvedReference,
                     "Reference cannot be resolved"
@@ -769,6 +928,9 @@ mod test {
         ref-to-node4-path = ${/some_other_node/some_node/v4};
         bad-ref-to-node4-path = ${/some_other_node/some_node/v4bad};
         ref-to-node3-path = ${/node3/bad2};
+        dot-ref-to-node4-path = ${./some_node/v4};
+        dot-ref-to-bad-path = ${./some_node/missing};
+        dot-ref-to-bad-sub-path = ${./some_node/sub/v4};
         node4: some_node {
             self-reference = &node4;
             v4 = <0x20>;
@@ -800,6 +962,18 @@ mod test {
                 ),
                 Diagnostic::new(
                     code.s1("${/some_other_node/some_node/v4bad}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+                Diagnostic::new(
+                    code.s1("${./some_node/missing}").span(),
+                    code.source(),
+                    ErrorCode::UnresolvedReference,
+                    "Reference cannot be resolved"
+                ),
+                Diagnostic::new(
+                    code.s1("${./some_node/sub/v4}").span(),
                     code.source(),
                     ErrorCode::UnresolvedReference,
                     "Reference cannot be resolved"
@@ -855,7 +1029,10 @@ mod test {
         assert!(diag.is_empty());
         assert_eq!(
             context
-                .get_node_by_path(&Path::new(vec!["some_node".into()]))
+                .get_node_by_path(
+                    &Path::new_absolute(vec!["some_node".into()]),
+                    &ReferenceContext::Root
+                )
                 .expect("Reference should be set")
                 .name
                 .span(),
@@ -863,7 +1040,21 @@ mod test {
         );
         assert_eq!(
             context
-                .get_node_by_path(&Path::new(vec!["some_other_node".into()]))
+                .get_node_by_path(
+                    &Path::new_dot_relative(vec!["some_other_node".into(), "some_node".into()]),
+                    &ReferenceContext::Root
+                )
+                .expect("Reference should be set")
+                .name
+                .span(),
+            code.s("some_node", 2).span(),
+        );
+        assert_eq!(
+            context
+                .get_node_by_path(
+                    &Path::new_absolute(vec!["some_other_node".into()]),
+                    &ReferenceContext::Root
+                )
                 .expect("Reference should be set")
                 .name
                 .span(),
@@ -871,10 +1062,10 @@ mod test {
         );
         assert_eq!(
             context
-                .get_node_by_path(&Path::new(vec![
-                    "some_other_node".into(),
-                    "some_node".into(),
-                ]))
+                .get_node_by_path(
+                    &Path::new_absolute(vec!["some_other_node".into(), "some_node".into(),]),
+                    &ReferenceContext::Root
+                )
                 .expect("Reference should be set")
                 .name
                 .span(),
@@ -939,6 +1130,188 @@ mod test {
     }
 
     #[test]
+    pub fn labeled_referenced() {
+        let code = Code::new(
+            "\
+/dts-v1/;
+
+/ {
+    some_node: node {
+            child-2 {
+            };
+    };
+};
+
+labeled_referenced: &some_node {
+    child-1 {
+    };
+};
+",
+        );
+        let (diagnostics, context) = code.get_analyzed_file();
+        assert_eq_unordered!(diagnostics, vec![]);
+
+        let node = context
+            .get_node_by_path(
+                &Path::new_label_relative("labeled_referenced".into(), vec!["child-1".into()]),
+                &ReferenceContext::Root,
+            )
+            .unwrap();
+        assert_eq!(
+            context.get_node_position(&node).0,
+            code.s1("child-1").span()
+        );
+    }
+
+    #[test]
+    pub fn test_get_position() {
+        let code = Code::new(
+            "\
+/dts-v1/;
+
+/ {
+    some_label: node {
+        relative = ${./another/prop};
+        second_label: another {
+            prop = <0>;
+        };
+    };
+};
+
+labeled_referenced: &some_label {
+    more = <0>;
+};
+",
+        );
+        let (diagnostics, analysis) = code.get_analyzed_file();
+        assert_eq_unordered!(diagnostics, vec![]);
+        assert_eq!(
+            analysis.get_position(
+                &crate::dts::ast::Reference::Label("labeled_referenced".to_string()),
+                &ReferenceContext::Root
+            ),
+            Some((code.s1("labeled_referenced:").span(), code.source()))
+        );
+        assert_eq!(
+            analysis.get_position(
+                &crate::dts::ast::Reference::Label("some_label".to_string()),
+                &ReferenceContext::Root
+            ),
+            Some((code.s1("node").span(), code.source()))
+        );
+        assert_eq!(
+            analysis.get_position(
+                &crate::dts::ast::Reference::Path(Path::new_absolute(vec![
+                    "node".into(),
+                    "another".into()
+                ])),
+                &ReferenceContext::Root
+            ),
+            Some((code.s("another", 2).span(), code.source()))
+        );
+        assert_eq!(
+            analysis.get_position(
+                &crate::dts::ast::Reference::Path(Path::new_label_relative(
+                    "some_label".into(),
+                    vec!["another".into()]
+                )),
+                &ReferenceContext::Root
+            ),
+            Some((code.s("another", 2).span(), code.source()))
+        );
+        assert_eq!(
+            analysis.get_position(
+                &crate::dts::ast::Reference::PropertyPath(PropertyPath::new(
+                    Path::new_label_relative("some_label".into(), vec!["another".into()]),
+                    "prop".into(),
+                )),
+                &ReferenceContext::Root
+            ),
+            Some((code.s("prop", 2).span(), code.source()))
+        );
+    }
+
+    #[test]
+    pub fn test_get_referred() {
+        let code = Code::new(
+            "\
+/dts-v1/;
+
+/ {
+    some_label: node@00001111 {
+        relative = ${./another/prop};
+        second_label: another {
+            prop = <0>;
+        };
+    };
+};
+
+labeled_referenced: &some_label {
+    more = <0>;
+};
+",
+        );
+        let (diagnostics, analysis) = code.get_analyzed_file();
+        assert_eq_unordered!(diagnostics, vec![]);
+        assert_eq!(
+            analysis.get_referred(
+                &crate::dts::ast::Reference::Label("labeled_referenced".to_string()),
+                &ReferenceContext::Root
+            ),
+            // TODO: check: is this the result we want?
+            Some("labeled_referenced".into())
+        );
+        assert_eq!(
+            analysis.get_referred(
+                &crate::dts::ast::Reference::Label("some_label".to_string()),
+                &ReferenceContext::Root
+            ),
+            Some("node@00001111".into())
+        );
+        assert_eq!(
+            analysis.get_referred(
+                &crate::dts::ast::Reference::Path(Path::new_absolute(vec![
+                    "node@00001111".into(),
+                    "another".into()
+                ])),
+                &ReferenceContext::Root
+            ),
+            Some("another".into())
+        );
+        // A node without its unit address does not resolve in a path:
+        assert_eq!(
+            analysis.get_referred(
+                &crate::dts::ast::Reference::Path(Path::new_absolute(vec![
+                    "node".into(),
+                    "another".into()
+                ])),
+                &ReferenceContext::Root
+            ),
+            None
+        );
+        assert_eq!(
+            analysis.get_referred(
+                &crate::dts::ast::Reference::Path(Path::new_label_relative(
+                    "some_label".into(),
+                    vec!["another".into()]
+                )),
+                &ReferenceContext::Root
+            ),
+            Some("another".into())
+        );
+        assert_eq!(
+            analysis.get_referred(
+                &crate::dts::ast::Reference::PropertyPath(PropertyPath::new(
+                    Path::new_label_relative("some_label".into(), vec!["another".into()]),
+                    "prop".into(),
+                )),
+                &ReferenceContext::Root
+            ),
+            Some("<0x0>".into())
+        );
+    }
+
+    #[test]
     pub fn schema_diagnostics() {
         let code = Code::new(
             r#"
@@ -948,6 +1321,12 @@ mod test {
     compatible = <0x0>;
     model = "foo", "bar";
     phandle = "wat";
+
+    good {
+        compatible = "aaa,bbb", "ccc,ddd";
+        model = "bla";
+        labeled: phandle = <also_labeled: 1>;
+    };
 };
 "#,
         );

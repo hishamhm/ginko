@@ -4,12 +4,18 @@ use crate::dts::ast::{
 };
 use crate::dts::{HasSpan, NodeItem, Position};
 
+#[derive(Debug, Clone)]
+pub enum ReferenceContext<'a> {
+    Root,
+    Node(&'a Node),
+}
+
 #[derive(Debug)]
 #[allow(unused)]
 pub enum ItemAtCursor<'a> {
     Property(&'a Property),
     Node(&'a Node),
-    Reference(&'a Reference),
+    Reference(&'a Reference, ReferenceContext<'a>),
     Label(&'a WithToken<String>),
     Include(&'a Include),
 }
@@ -46,12 +52,14 @@ impl AnyDirective {
                     None
                 }
             }
-            AnyDirective::DeletedNode(_, node_ref) => {
-                Some(ItemAtCursor::Reference(node_ref.item()))
-            }
-            AnyDirective::OmitIfNoRef(_, node_ref) => {
-                Some(ItemAtCursor::Reference(node_ref.item()))
-            }
+            AnyDirective::DeletedNode(_, node_ref) => Some(ItemAtCursor::Reference(
+                node_ref.item(),
+                ReferenceContext::Root,
+            )),
+            AnyDirective::OmitIfNoRef(_, node_ref) => Some(ItemAtCursor::Reference(
+                node_ref.item(),
+                ReferenceContext::Root,
+            )),
             _ => None,
         }
     }
@@ -60,9 +68,12 @@ impl AnyDirective {
 impl ReferencedNode {
     pub fn item_at_cursor(&self, cursor: &Position) -> Option<ItemAtCursor<'_>> {
         if self.reference.span().contains(cursor) {
-            return Some(ItemAtCursor::Reference(self.reference.item()));
+            return Some(ItemAtCursor::Reference(
+                self.reference.item(),
+                ReferenceContext::Root,
+            ));
         }
-        self.payload.item_at_cursor(cursor)
+        self.payload.item_at_cursor(cursor, &ReferenceContext::Root)
     }
 }
 
@@ -73,14 +84,19 @@ impl Node {
                 return Some(ItemAtCursor::Label(label));
             }
         }
-        self.payload.item_at_cursor(cursor)
+        self.payload
+            .item_at_cursor(cursor, &ReferenceContext::Node(self))
     }
 }
 
 impl NodePayload {
-    pub fn item_at_cursor(&self, cursor: &Position) -> Option<ItemAtCursor<'_>> {
+    pub fn item_at_cursor<'a>(
+        &'a self,
+        cursor: &Position,
+        ctx: &ReferenceContext<'a>,
+    ) -> Option<ItemAtCursor<'a>> {
         for node in &self.items {
-            if let Some(item) = node.item_at_cursor(cursor) {
+            if let Some(item) = node.item_at_cursor(cursor, ctx) {
                 return Some(item);
             }
         }
@@ -89,9 +105,13 @@ impl NodePayload {
 }
 
 impl NodeItem {
-    pub fn item_at_cursor(&self, cursor: &Position) -> Option<ItemAtCursor<'_>> {
+    pub fn item_at_cursor<'a>(
+        &'a self,
+        cursor: &Position,
+        ctx: &ReferenceContext<'a>,
+    ) -> Option<ItemAtCursor<'a>> {
         match self {
-            NodeItem::Property(property) => property.item_at_cursor(cursor),
+            NodeItem::Property(property) => property.item_at_cursor(cursor, ctx),
             NodeItem::Node(node) => node.item_at_cursor(cursor),
             NodeItem::DeletedNode(..) => None,
             NodeItem::DeletedProperty(..) => None,
@@ -100,14 +120,18 @@ impl NodeItem {
 }
 
 impl Property {
-    pub fn item_at_cursor(&self, cursor: &Position) -> Option<ItemAtCursor<'_>> {
+    pub fn item_at_cursor<'a>(
+        &'a self,
+        cursor: &Position,
+        ctx: &ReferenceContext<'a>,
+    ) -> Option<ItemAtCursor<'a>> {
         if let Some(label) = &self.label {
             if label.span().contains(cursor) {
                 return Some(ItemAtCursor::Label(label));
             }
         }
         for value in &self.values {
-            if let Some(item) = value.item_at_cursor(cursor) {
+            if let Some(item) = value.item_at_cursor(cursor, ctx) {
                 return Some(item);
             }
         }
@@ -116,7 +140,11 @@ impl Property {
 }
 
 impl PropertyValue {
-    pub fn item_at_cursor(&self, cursor: &Position) -> Option<ItemAtCursor<'_>> {
+    pub fn item_at_cursor<'a>(
+        &'a self,
+        cursor: &Position,
+        ctx: &ReferenceContext<'a>,
+    ) -> Option<ItemAtCursor<'a>> {
         match self {
             PropertyValue::String(_) => None,
             PropertyValue::Cells(_, cells, _) => {
@@ -125,7 +153,10 @@ impl PropertyValue {
                         Cell::Number(_) | Cell::Expression(_) => {}
                         Cell::Reference(reference) => {
                             if reference.span().contains(cursor) {
-                                return Some(ItemAtCursor::Reference(reference.item()));
+                                return Some(ItemAtCursor::Reference(
+                                    reference.item(),
+                                    ctx.clone(),
+                                ));
                             }
                         }
                     }
@@ -134,7 +165,7 @@ impl PropertyValue {
             }
             PropertyValue::Reference(reference) => {
                 if reference.span().contains(cursor) {
-                    Some(ItemAtCursor::Reference(reference.item()))
+                    Some(ItemAtCursor::Reference(reference.item(), ctx.clone()))
                 } else {
                     None
                 }
