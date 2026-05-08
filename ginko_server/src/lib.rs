@@ -276,8 +276,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         match item {
-            ItemAtCursor::Reference(reference) => {
-                match project.get_node_position(&file_path, reference) {
+            ItemAtCursor::Reference(reference, ctx) => {
+                match project.get_node_position(&file_path, reference, &ctx) {
                     Some((span, path)) => Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
                         Url::from_file_path(path).unwrap(),
                         ginko_span_to_range(span),
@@ -317,8 +317,8 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
         let str = match item {
-            ItemAtCursor::Reference(reference) => {
-                match project.document_reference(&file_path, reference) {
+            ItemAtCursor::Reference(reference, ctx) => {
+                match project.document_reference(&file_path, reference, &ctx) {
                     Some(str) => str,
                     None => return Ok(None),
                 }

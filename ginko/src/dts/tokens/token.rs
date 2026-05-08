@@ -68,8 +68,8 @@ impl TokenKind {
             TokenKind::Directive(compiler_directive) => format!("{}", compiler_directive),
             TokenKind::Ref(reference) => match reference {
                 Reference::Simple(simple) => format!("&{simple}"),
-                Reference::Path(path) => format!("&{path}"),
-                Reference::PropertyPath(path) => format!("${path}"),
+                Reference::Path(path) => format!("&{{{path}}}"),
+                Reference::PropertyPath(path) => format!("${{{path}}}"),
             },
             TokenKind::Comment(comment) => format!("// {comment}\n"),
             TokenKind::Unknown(u) => format!("{}", *u as char),

@@ -765,12 +765,32 @@ mod test {
             }
         );
 
-        let (source, mut lexer) = new_lexer("${/path/to/node}");
+        let (source, mut lexer) = new_lexer("${/path/to/node/property}");
         assert_eq!(
             lexer.next_expect(),
             Token {
-                span: Position::zero().to(Position::new(0, 16)),
-                kind: Ref(Reference::PropertyPath("/path/to/node".into())),
+                span: Position::zero().to(Position::new(0, 25)),
+                kind: Ref(Reference::PropertyPath("/path/to/node/property".into())),
+                source: source.clone(),
+            }
+        );
+
+        let (source, mut lexer) = new_lexer("${label/child/node/property}");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 28)),
+                kind: Ref(Reference::PropertyPath("label/child/node/property".into())),
+                source: source.clone(),
+            }
+        );
+
+        let (source, mut lexer) = new_lexer("${./relative/node/property}");
+        assert_eq!(
+            lexer.next_expect(),
+            Token {
+                span: Position::zero().to(Position::new(0, 27)),
+                kind: Ref(Reference::PropertyPath("./relative/node/property".into())),
                 source: source.clone(),
             }
         );

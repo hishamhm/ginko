@@ -120,13 +120,27 @@ impl Display for NodeName {
     }
 }
 
-// LRM 2.2.3 – Paths
 #[derive(Eq, PartialEq, Debug, Hash, Clone)]
-pub struct Path {
+pub struct AbsolutePath {
     elements: Vec<NodeName>,
 }
 
-impl Display for Path {
+pub static ABSOLUTE_ROOT: AbsolutePath = AbsolutePath { elements: vec![] };
+
+impl AbsolutePath {
+    pub fn with_child(&self, child: NodeName) -> Self {
+        self.with_children(&[child])
+    }
+
+    pub fn with_children(&self, children: &[NodeName]) -> Self {
+        let mut clone = self.clone();
+        let elements = &mut clone.elements;
+        elements.extend_from_slice(children);
+        clone
+    }
+}
+
+impl Display for AbsolutePath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.elements.is_empty() {
             write!(f, "/")
@@ -139,37 +153,131 @@ impl Display for Path {
     }
 }
 
+#[derive(Eq, PartialEq, Debug, Hash, Clone)]
+pub struct DotRelativePath {
+    elements: Vec<NodeName>,
+}
+
+impl DotRelativePath {
+    pub fn elements(&self) -> &[NodeName] {
+        &self.elements
+    }
+}
+
+impl Display for DotRelativePath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, ".")?;
+        if self.elements.is_empty() {
+            write!(f, "/")
+        } else {
+            for element in &self.elements {
+                write!(f, "/{}", element)?;
+            }
+            Ok(())
+        }
+    }
+}
+
+#[derive(Eq, PartialEq, Debug, Hash, Clone)]
+pub struct LabelRelativePath {
+    pub label: String,
+    elements: Vec<NodeName>,
+}
+
+impl LabelRelativePath {
+    pub fn elements(&self) -> &[NodeName] {
+        &self.elements
+    }
+}
+
+impl Display for LabelRelativePath {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.label)?;
+        if !self.elements.is_empty() {
+            for element in &self.elements {
+                write!(f, "/{}", element)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+// LRM 2.2.3 – Paths
+#[derive(Eq, PartialEq, Debug, Hash, Clone)]
+pub enum Path {
+    Absolute(AbsolutePath),
+    DotRelative(DotRelativePath),
+    LabelRelative(LabelRelativePath),
+}
+
+impl Display for Path {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match &self {
+            Path::Absolute(p) => p.fmt(f),
+            Path::DotRelative(p) => p.fmt(f),
+            Path::LabelRelative(p) => p.fmt(f),
+        }
+    }
+}
+
 impl Path {
-    pub fn new(elements: Vec<NodeName>) -> Path {
-        Path { elements }
+    pub fn new_absolute(elements: Vec<NodeName>) -> Path {
+        Path::Absolute(AbsolutePath { elements })
+    }
+
+    pub fn new_dot_relative(elements: Vec<NodeName>) -> Path {
+        Path::DotRelative(DotRelativePath { elements })
+    }
+
+    pub fn new_label_relative(label: String, elements: Vec<NodeName>) -> Path {
+        Path::LabelRelative(LabelRelativePath { label, elements })
     }
 
     pub fn empty() -> Path {
-        Path { elements: vec![] }
+        Self::new_absolute(vec![])
     }
 
-    pub fn with_child(&self, child: NodeName) -> Path {
-        let mut new_elements = self.elements.clone();
-        new_elements.push(child);
-        Path {
-            elements: new_elements,
+    pub fn elements(&self) -> &Vec<NodeName> {
+        match &self {
+            Path::Absolute(p) => &p.elements,
+            Path::DotRelative(p) => &p.elements,
+            Path::LabelRelative(p) => &p.elements,
         }
     }
 
     pub fn iter(&self) -> impl Iterator<Item = &NodeName> {
-        self.elements.iter()
+        self.elements().iter()
     }
+}
+
+fn split_path(path: &str) -> Vec<NodeName> {
+    path.split('/')
+        .filter(|component| !component.is_empty())
+        .map(NodeName::from)
+        .collect_vec()
 }
 
 impl From<&str> for Path {
     fn from(value: &str) -> Self {
-        Path::new(
-            value
-                .split('/')
-                .filter(|component| !component.is_empty())
-                .map(NodeName::from)
-                .collect_vec(),
-        )
+        if value.starts_with('/') {
+            Path::Absolute(AbsolutePath {
+                elements: split_path(value),
+            })
+        } else if let Some(rest) = value.strip_prefix("./") {
+            Path::DotRelative(DotRelativePath {
+                elements: split_path(rest),
+            })
+        } else if let Some((label, rest)) = value.split_once('/') {
+            Path::LabelRelative(LabelRelativePath {
+                label: label.to_string(),
+                elements: split_path(rest),
+            })
+        } else {
+            Path::LabelRelative(LabelRelativePath {
+                label: value.to_string(),
+                elements: vec![],
+            })
+        }
     }
 }
 
@@ -210,10 +318,24 @@ impl From<&str> for PropertyPath {
 
 impl Display for PropertyPath {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        if self.node_path().elements.is_empty() {
-            write!(f, "{}", self.property_name)
-        } else {
-            write!(f, "{}/{}", self.node_path, self.property_name)
+        match self.node_path() {
+            Path::Absolute(_) => {
+                if self.node_path().elements().is_empty() {
+                    write!(f, "/{}", self.property_name)
+                } else {
+                    write!(f, "{}/{}", self.node_path, self.property_name)
+                }
+            }
+            Path::DotRelative(_) => {
+                if self.node_path().elements().is_empty() {
+                    write!(f, "./{}", self.property_name)
+                } else {
+                    write!(f, "{}/{}", self.node_path, self.property_name)
+                }
+            }
+            Path::LabelRelative(_) => {
+                write!(f, "{}/{}", self.node_path, self.property_name)
+            }
         }
     }
 }
@@ -269,7 +391,7 @@ impl HasSpan for PropertyValue {
             PropertyValue::Cells(start, _, end) => start.start().to(end.end()),
             PropertyValue::Reference(reference) => reference.span(),
             PropertyValue::ByteStrings(start, _, end) => start.start().to(end.end()),
-            PropertyValue::Incbin(start, _, end) => start.start().to(end.end()),
+            PropertyValue::Incbin(_, include, end) => include.include_token.start().to(end.end()),
         }
     }
 }
@@ -358,21 +480,6 @@ impl Property {
             label,
             name,
             values: vec![],
-            end,
-        }
-    }
-
-    #[cfg(test)]
-    pub fn simple(
-        name: WithToken<String>,
-        value: PropertyValue,
-        label: Option<WithToken<String>>,
-        end: Token,
-    ) -> Property {
-        Property {
-            label,
-            name,
-            values: vec![value],
             end,
         }
     }
@@ -601,5 +708,119 @@ impl Display for Primary {
             Primary::ReferencedNode(node) => write!(f, "{node}"),
             Primary::CStyleInclude(include) => write!(f, "#include {include}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn display_node_name() {
+        let item = NodeName::with_address("foo", "12345678");
+        assert_eq!(format!("{item}"), "foo@12345678");
+    }
+
+    #[test]
+    fn display_absolute_path() {
+        let item = AbsolutePath { elements: vec![] };
+        assert_eq!(format!("{item}"), "/");
+
+        let node = NodeName::with_address("foo", "12345678");
+        let item = AbsolutePath {
+            elements: vec![node],
+        };
+        assert_eq!(format!("{item}"), "/foo@12345678");
+
+        let node1 = NodeName::with_address("foo", "12345678");
+        let node2 = NodeName::simple("bar");
+        let item = AbsolutePath {
+            elements: vec![node1, node2],
+        };
+        assert_eq!(format!("{item}"), "/foo@12345678/bar");
+    }
+
+    #[test]
+    fn display_dot_relative_path() {
+        let item = DotRelativePath { elements: vec![] };
+        assert_eq!(format!("{item}"), "./");
+
+        let node = NodeName::with_address("foo", "12345678");
+        let item = DotRelativePath {
+            elements: vec![node],
+        };
+        assert_eq!(format!("{item}"), "./foo@12345678");
+
+        let node1 = NodeName::with_address("foo", "12345678");
+        let node2 = NodeName::simple("bar");
+        let item = DotRelativePath {
+            elements: vec![node1, node2],
+        };
+        assert_eq!(format!("{item}"), "./foo@12345678/bar");
+    }
+
+    #[test]
+    fn display_label_relative_path() {
+        let item = LabelRelativePath {
+            label: "hello".into(),
+            elements: vec![],
+        };
+        assert_eq!(format!("{item}"), "hello");
+
+        let node = NodeName::with_address("foo", "12345678");
+        let item = LabelRelativePath {
+            label: "hello".into(),
+            elements: vec![node],
+        };
+        assert_eq!(format!("{item}"), "hello/foo@12345678");
+
+        let node1 = NodeName::with_address("foo", "12345678");
+        let node2 = NodeName::simple("bar");
+        let item = LabelRelativePath {
+            label: "hello".into(),
+            elements: vec![node1, node2],
+        };
+        assert_eq!(format!("{item}"), "hello/foo@12345678/bar");
+    }
+
+    #[test]
+    fn display_path() {
+        let item = Path::empty();
+        assert_eq!(format!("{item}"), "/");
+
+        let item = Path::new_dot_relative(vec![]);
+        assert_eq!(format!("{item}"), "./");
+
+        let item = Path::new_label_relative("hello".into(), vec![]);
+        assert_eq!(format!("{item}"), "hello");
+    }
+
+    #[test]
+    fn display_property_path() {
+        let item = PropertyPath::new(Path::empty(), "prop".into());
+        assert_eq!(format!("{item}"), "/prop");
+
+        let item = PropertyPath::new(Path::new_dot_relative(vec![]), "prop".into());
+        assert_eq!(format!("{item}"), "./prop");
+
+        let item = PropertyPath::new(
+            Path::new_label_relative("hello".into(), vec![]),
+            "prop".into(),
+        );
+        assert_eq!(format!("{item}"), "hello/prop");
+
+        let elements = [NodeName::simple("foo"), NodeName::simple("bar")];
+
+        let item = PropertyPath::new(Path::new_absolute(elements.to_vec()), "prop".into());
+        assert_eq!(format!("{item}"), "/foo/bar/prop");
+
+        let item = PropertyPath::new(Path::new_dot_relative(elements.to_vec()), "prop".into());
+        assert_eq!(format!("{item}"), "./foo/bar/prop");
+
+        let item = PropertyPath::new(
+            Path::new_label_relative("hello".into(), elements.to_vec()),
+            "prop".into(),
+        );
+        assert_eq!(format!("{item}"), "hello/foo/bar/prop");
     }
 }

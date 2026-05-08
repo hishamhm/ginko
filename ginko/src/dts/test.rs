@@ -150,4 +150,8 @@ impl Code {
             .next()
             .expect("Expected token")
     }
+
+    pub fn position(&self) -> Position {
+        self.span().start()
+    }
 }

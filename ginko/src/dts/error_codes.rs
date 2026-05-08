@@ -30,6 +30,7 @@ pub enum ErrorCode {
     CyclicDependencyError,
     ExpectedU32,
     ExpectedString,
+    NotAPropertyContext,
 }
 
 /// The `SeverityMap` maps error codes to severities.
@@ -65,6 +66,7 @@ impl Default for SeverityMap {
             | IOError
             | ErrorsInInclude
             | CyclicDependencyError
+            | NotAPropertyContext
             | IncorrectDirective => Severity::Error,
             NameTooLong
             | NonStringInCompatible

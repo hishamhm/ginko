@@ -5,7 +5,7 @@ use crate::dts::error_codes::SeverityMap;
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::ByteReader;
 use crate::dts::tokens::Lexer;
-use crate::dts::visitor::ItemAtCursor;
+use crate::dts::visitor::{ItemAtCursor, ReferenceContext};
 use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Severity, Span};
 use std::collections::{BTreeSet, HashMap};
 use std::iter::empty;
@@ -318,8 +318,13 @@ impl Project {
         file.item_at_cursor(position)
     }
 
-    pub fn document_reference(&self, path: &Path, reference: &Reference) -> Option<String> {
-        let name = self.get_analysis(path)?.get_referred(reference)?;
+    pub fn document_reference(
+        &self,
+        path: &Path,
+        reference: &Reference,
+        ctx: &ReferenceContext<'_>,
+    ) -> Option<String> {
+        let name = self.get_analysis(path)?.get_referred(reference, ctx)?;
         Some(name)
     }
 
@@ -327,8 +332,9 @@ impl Project {
         &self,
         path: &Path,
         reference: &Reference,
+        ctx: &ReferenceContext<'_>,
     ) -> Option<(Span, Arc<Path>)> {
-        self.get_analysis(path)?.get_position(reference)
+        self.get_analysis(path)?.get_position(reference, ctx)
     }
 
     pub fn get_root(&self, path: &Path) -> Option<&DtsFile> {
@@ -411,13 +417,7 @@ impl Project {
         include: &Include,
         loader: &mut IncludeLoaderGuard,
     ) -> Option<PathBuf> {
-        let canonicalized_path = match loader.load(parent, &include.file_name()) {
-            Ok(path) => path,
-            Err(err) => {
-                diagnostics.push(Diagnostic::io_error(include.span(), include.source(), err));
-                return None;
-            }
-        };
+        let canonicalized_path = loader.load(parent, &include.file_name()).ok()?;
 
         // Avoids duplicate insertion and cyclic dependencies
         if !self.files.contains_key(&canonicalized_path) {
@@ -452,10 +452,12 @@ impl Project {
 // For some reason, this fails under windows with error "The system cannot find the file specified. (os error 2)"
 #[cfg(not(windows))]
 mod tests {
+    use crate::dts::ast::PropertyPath;
     use crate::dts::error_codes::ErrorCode;
     use crate::dts::loader::IncludeLoaderGuard;
     use crate::dts::test::Code;
     use crate::dts::tokens::TokenKind;
+    use crate::dts::visitor::ReferenceContext;
     use crate::dts::{ast, Diagnostic, HasSpan, ItemAtCursor, Project};
     use assert_matches::assert_matches;
     use itertools::Itertools;
@@ -581,11 +583,11 @@ mod tests {
         let item = project
             .find_at_pos(&file2, &substr.span().start())
             .expect("Found no item");
-        let ItemAtCursor::Reference(reference) = item else {
+        let ItemAtCursor::Reference(reference, _) = item else {
             panic!("Found non-node at cursor")
         };
         assert_eq!(reference, &ast::Reference::Label("some_node".to_owned()));
-        match project.get_node_position(&file2, reference) {
+        match project.get_node_position(&file2, reference, &ReferenceContext::Root) {
             Some((span, path)) => {
                 assert_eq!(span, code1.s1("node_a").span());
                 assert_eq!(
@@ -600,11 +602,11 @@ mod tests {
         let item = project
             .find_at_pos(&file2, &substr.span().start())
             .expect("Found no item");
-        let ItemAtCursor::Reference(reference) = item else {
+        let ItemAtCursor::Reference(reference, _) = item else {
             panic!("Found non-node at cursor")
         };
         assert_eq!(reference, &ast::Reference::Path("/node_a".into()));
-        match project.get_node_position(&file2, reference) {
+        match project.get_node_position(&file2, reference, &ReferenceContext::Root) {
             Some((span, path)) => {
                 assert_eq!(span, code1.s1("node_a").span());
                 assert_eq!(
@@ -803,6 +805,46 @@ mod tests {
     */
 
     #[test]
+    pub fn bad_path_in_include_and_incbin() {
+        let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+
+        let temp_dir = TempDir::new();
+        let (code, file) = temp_dir.add_file(
+            "test.dts",
+            r#"
+/dts-v1/;
+
+/include/ "/missing_file_1"
+
+/ {
+    prop = /incbin/( "/missing_file_2" );
+};
+"#,
+        );
+        project
+            .add_file(
+                file.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Cannot add file to project");
+
+        assert!(project.get_file(&file).is_some());
+        let diagnostics = project.get_diagnostics(&file).cloned().collect_vec();
+        assert_eq!(diagnostics.len(), 2);
+        assert_eq!(*diagnostics[0].kind(), ErrorCode::IOError);
+        assert_eq!(
+            diagnostics[0].span(),
+            code.s1("/include/ \"/missing_file_1\"").span()
+        );
+        assert_eq!(*diagnostics[1].kind(), ErrorCode::IOError);
+        assert_eq!(
+            diagnostics[1].span(),
+            code.s1("/incbin/( \"/missing_file_2\" )").span()
+        );
+    }
+
+    #[test]
     pub fn error_in_included_file_add_include_before_dts() {
         let mut project = Project::default();
         let mut loader = IncludeLoaderGuard::default();
@@ -894,5 +936,72 @@ mod tests {
         assert!(project.get_file(&file1).is_some());
         assert!(project.get_file(&file2).is_some());
         assert!(project.get_file(&file3).is_some());
+    }
+
+    #[test]
+    pub fn file_with_dot_relative_references() {
+        let temp_dir = TempDir::new();
+        let (code, file) = temp_dir.add_file(
+            "test.dts",
+            r#"
+/dts-v1/;
+
+/ {
+    some_label: node {
+        relative = ${./another/nested/prop};
+        second_label: another {
+            nested {
+                prop = <0>;
+            };
+        };
+    };
+};
+"#,
+        );
+
+        let mut project = Project::default();
+        eprintln!("{}", file.display());
+        let mut loader = IncludeLoaderGuard::default();
+
+        project
+            .add_file(
+                file.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Unexpected IO error");
+
+        project.assert_no_diagnostics();
+
+        assert!(project.get_file(&file).is_some());
+
+        let item = project
+            .find_at_pos(&file, &code.s1("nested").position())
+            .unwrap();
+
+        let ItemAtCursor::Reference(reference, ref_ctx) = item else {
+            panic!("Found non-node at cursor")
+        };
+
+        let ReferenceContext::Node(_) = &ref_ctx else {
+            panic!("Reference has no context")
+        };
+
+        assert_eq!(
+            reference,
+            &ast::Reference::PropertyPath(PropertyPath::new(
+                ast::Path::new_dot_relative(vec!["another".into(), "nested".into()]),
+                "prop".into()
+            ))
+        );
+        match project.get_node_position(&file, reference, &ref_ctx) {
+            Some((span, path)) => {
+                assert_eq!(span, code.s("prop", 2).span());
+                assert_eq!(
+                    path.to_path_buf(),
+                    dunce::canonicalize(&file).expect("File does not exist")
+                );
+            }
+            None => panic!("References does not reference nodes"),
+        }
     }
 }

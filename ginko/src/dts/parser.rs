@@ -171,14 +171,6 @@ where
                 WithToken::new(crate::dts::ast::Reference::Label(reference.clone()), token)
             }
             Reference::Path(path) => {
-                // TODO: for now we simply ignore relative path markers.
-                let stripped = path.strip_prefix("./");
-                let path = if let Some(rest) = stripped {
-                    rest
-                } else {
-                    path.as_str()
-                };
-
                 if path.is_empty() {
                     self.diagnostics.push(Diagnostic::from_token(
                         token.clone(),
@@ -186,21 +178,13 @@ where
                         "Path cannot be empty",
                     ));
                 }
-                let path = Path::from(path);
+                let path = Path::from(path.as_str());
                 for el in path.iter() {
                     self.check_is_node_name(token.span(), el);
                 }
                 WithToken::new(crate::dts::ast::Reference::Path(path), token)
             }
             Reference::PropertyPath(path) => {
-                // FIXME: for now we simply ignore relative path markers.
-                let stripped = path.strip_prefix("./");
-                let path = if let Some(rest) = stripped {
-                    rest
-                } else {
-                    path.as_str()
-                };
-
                 if path.is_empty() {
                     self.diagnostics.push(Diagnostic::from_token(
                         token.clone(),
@@ -208,7 +192,7 @@ where
                         "Path cannot be empty",
                     ));
                 }
-                let path = PropertyPath::from(path);
+                let path = PropertyPath::from(path.as_str());
 
                 for el in path.node_path().iter() {
                     self.check_is_node_name(token.span(), el);
@@ -844,7 +828,8 @@ where
                     omit_if_no_ref: None,
                 })))
             }
-            TokenKind::Ref(reference) => {
+            TokenKind::Ref(reference @ Reference::Simple(_))
+            | TokenKind::Ref(reference @ Reference::Path(_)) => {
                 let reference = self.reference(token.clone(), reference);
                 let root_payload = self.node_payload()?;
                 Ok(Primary::ReferencedNode(Arc::new(ReferencedNode {
@@ -853,6 +838,12 @@ where
                     payload: root_payload,
                 })))
             }
+            TokenKind::Ref(Reference::PropertyPath(_)) => Err(Diagnostic::new(
+                token.span(),
+                token.source(),
+                ErrorCode::NotAPropertyContext,
+                "$-references are not allowed at the top level",
+            )),
             TokenKind::Directive(CompilerDirective::DeleteNode) => {
                 let reference = self.parse_reference()?;
                 self.expect_semicolon()?;
@@ -1011,7 +1002,7 @@ mod test {
     }
 
     #[test]
-    pub fn reference_properties() {
+    pub fn node_path_reference_properties() {
         let code = Code::new("&my_ref");
         assert_eq!(
             code.parse_ok_no_diagnostics(Parser::property_value),
@@ -1024,7 +1015,7 @@ mod test {
         assert_eq!(
             code.parse_ok_no_diagnostics(Parser::property_value),
             PropertyValue::Reference(WithToken::new(
-                Reference::Path(Path::new(vec![
+                Reference::Path(Path::new_absolute(vec![
                     NodeName::simple("path"),
                     NodeName::simple("to"),
                     NodeName::with_address("somewhere", "2000"),
@@ -1041,11 +1032,86 @@ mod test {
             code.parse_ok_no_diagnostics(Parser::property_value),
             PropertyValue::Reference(WithToken::new(
                 Reference::PropertyPath(PropertyPath::new(
-                    Path::new(vec![
+                    Path::new_absolute(vec![
                         NodeName::simple("path"),
                         NodeName::simple("to"),
                         NodeName::with_address("somewhere", "2000"),
                     ]),
+                    "value".to_string()
+                )),
+                code.token(),
+            ))
+        );
+    }
+
+    #[test]
+    pub fn node_path_relative_properties() {
+        let code = Code::new("&{./path/to/somewhere@2000}");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Reference(WithToken::new(
+                Reference::Path(Path::new_dot_relative(vec![
+                    NodeName::simple("path"),
+                    NodeName::simple("to"),
+                    NodeName::with_address("somewhere", "2000"),
+                ])),
+                code.token(),
+            ))
+        );
+    }
+    #[test]
+    pub fn property_path_relative_properties() {
+        let code = Code::new("${./path/to/somewhere@2000/value}");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Reference(WithToken::new(
+                Reference::PropertyPath(PropertyPath::new(
+                    Path::new_dot_relative(vec![
+                        NodeName::simple("path"),
+                        NodeName::simple("to"),
+                        NodeName::with_address("somewhere", "2000"),
+                    ]),
+                    "value".to_string()
+                )),
+                code.token(),
+            ))
+        );
+    }
+
+    #[test]
+    pub fn node_path_label_properties() {
+        let code = Code::new("&{label/path/to/somewhere@2000}");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Reference(WithToken::new(
+                Reference::Path(Path::new_label_relative(
+                    "label".to_string(),
+                    vec![
+                        NodeName::simple("path"),
+                        NodeName::simple("to"),
+                        NodeName::with_address("somewhere", "2000"),
+                    ]
+                )),
+                code.token(),
+            ))
+        );
+    }
+
+    #[test]
+    pub fn property_path_label_properties() {
+        let code = Code::new("${label/path/to/somewhere@2000/value}");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Reference(WithToken::new(
+                Reference::PropertyPath(PropertyPath::new(
+                    Path::new_label_relative(
+                        "label".to_string(),
+                        vec![
+                            NodeName::simple("path"),
+                            NodeName::simple("to"),
+                            NodeName::with_address("somewhere", "2000"),
+                        ]
+                    ),
                     "value".to_string()
                 )),
                 code.token(),
@@ -1629,6 +1695,30 @@ mod test {
                     ))
                 ]
             }
+        );
+    }
+
+    #[test]
+    pub fn path_reference_at_top_level() {
+        let code = Code::new(
+            "
+/dts-v1/;
+
+${/not/allowed} {
+};
+        ",
+        );
+
+        let diag = code.parse(Parser::file).0.unwrap_err();
+
+        assert_eq!(
+            diag,
+            Diagnostic::new(
+                code.s1("${/not/allowed}").span(),
+                code.source(),
+                ErrorCode::NotAPropertyContext,
+                "$-references are not allowed at the top level",
+            )
         );
     }
 }
