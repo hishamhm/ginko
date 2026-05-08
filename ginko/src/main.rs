@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("{}", printer);
     }
 
-    if has_errors {
+    if !has_errors {
         println!("OK; No issues found");
         exit(0);
     } else {
