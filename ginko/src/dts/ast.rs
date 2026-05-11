@@ -357,17 +357,35 @@ impl Display for Reference {
     }
 }
 
-#[derive(Eq, PartialEq, Debug)]
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum NumberRepr {
+    Hexadecimal,
+    Octal,
+    Decimal,
+}
+
+#[derive(Eq, PartialEq, Debug, Clone)]
 pub enum Cell {
-    Number(WithToken<u32>),
+    Number(WithToken<u32>, NumberRepr),
     Reference(WithToken<Reference>),
     Expression(WithToken<String>),
+}
+
+impl Cell {
+    pub fn decimal(token: WithToken<u32>) -> Cell {
+        Cell::Number(token, NumberRepr::Decimal)
+    }
+    pub fn hexadecimal(token: WithToken<u32>) -> Cell {
+        Cell::Number(token, NumberRepr::Hexadecimal)
+    }
 }
 
 impl Display for Cell {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Cell::Number(num) => write!(f, "0x{num:x}"),
+            Cell::Number(num, NumberRepr::Hexadecimal) => write!(f, "0x{num:x}"),
+            Cell::Number(num, NumberRepr::Octal) => write!(f, "0{:o}", *num.item() as i32),
+            Cell::Number(num, NumberRepr::Decimal) => write!(f, "{num}"),
             Cell::Reference(reference) => write!(f, "{reference}"),
             Cell::Expression(exp) => write!(f, "{exp}"),
         }

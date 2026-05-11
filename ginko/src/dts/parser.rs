@@ -1,6 +1,6 @@
 use crate::dts::ast::{
-    AnyDirective, Cell, DtsFile, Include, Memreserve, Node, NodeItem, NodeName, NodePayload, Path,
-    Primary, Property, PropertyPath, PropertyValue, ReferencedNode, WithToken,
+    AnyDirective, Cell, DtsFile, Include, Memreserve, Node, NodeItem, NodeName, NodePayload,
+    NumberRepr, Path, Primary, Property, PropertyPath, PropertyValue, ReferencedNode, WithToken,
 };
 use crate::dts::data::{HasSource, Span};
 use crate::dts::diagnostics::{Diagnostic, NameContext};
@@ -210,24 +210,30 @@ where
                 Ok(Cell::Reference(self.reference(tok.clone(), reference)))
             }
             TokenKind::UnparsedNumber(num) => {
-                let num = if num.len() == 1 {
-                    num.parse::<u32>()
+                let (num, repr) = if num.len() == 1 {
+                    (num.parse::<u32>(), NumberRepr::Decimal)
                 } else if num.starts_with("0x") {
-                    u32::from_str_radix(&num.as_str()[2..], 16)
+                    (
+                        u32::from_str_radix(&num.as_str()[2..], 16),
+                        NumberRepr::Hexadecimal,
+                    )
                 } else if num.starts_with('0') {
-                    u32::from_str_radix(&num.as_str()[1..], 8)
+                    (
+                        u32::from_str_radix(&num.as_str()[1..], 8),
+                        NumberRepr::Octal,
+                    )
                 } else {
-                    num.parse::<u32>()
+                    (num.parse::<u32>(), NumberRepr::Decimal)
                 };
                 match num {
-                    Ok(num) => Ok(Cell::Number(WithToken::new(num, tok))),
+                    Ok(num) => Ok(Cell::Number(WithToken::new(num, tok), repr)),
                     Err(err) => {
                         self.diagnostics.push(Diagnostic::parse_int_error(
                             tok.span(),
                             tok.source(),
                             err,
                         ));
-                        Ok(Cell::Number(WithToken::new(0, tok)))
+                        Ok(Cell::Number(WithToken::new(0, tok), repr))
                     }
                 }
             }
@@ -947,7 +953,7 @@ mod test {
             code.parse_ok_no_diagnostics(Parser::property_value),
             PropertyValue::Cells(
                 code.s1("<").token(),
-                vec![Cell::Number(WithToken::new(0, code.s1("0").token()))],
+                vec![Cell::decimal(WithToken::new(0, code.s1("0").token()))],
                 code.s1(">").token(),
             )
         );
@@ -956,7 +962,7 @@ mod test {
             code.parse_ok_no_diagnostics(Parser::property_value),
             PropertyValue::Cells(
                 code.s1("<").token(),
-                vec![Cell::Number(WithToken::new(4, code.s1("4").token()))],
+                vec![Cell::decimal(WithToken::new(4, code.s1("4").token()))],
                 code.s1(">").token(),
             )
         );
@@ -966,8 +972,8 @@ mod test {
             PropertyValue::Cells(
                 code.s1("<").token(),
                 vec![
-                    Cell::Number(WithToken::new(4, code.s1("4").token())),
-                    Cell::Number(WithToken::new(17, code.s1("17").token())),
+                    Cell::decimal(WithToken::new(4, code.s1("4").token())),
+                    Cell::decimal(WithToken::new(17, code.s1("17").token())),
                 ],
                 code.s1(">").token(),
             )
@@ -978,8 +984,8 @@ mod test {
             PropertyValue::Cells(
                 code.s1("<").token(),
                 vec![
-                    Cell::Number(WithToken::new(17, code.s1("17").token())),
-                    Cell::Number(WithToken::new(0xC, code.s1("0xC").token())),
+                    Cell::decimal(WithToken::new(17, code.s1("17").token())),
+                    Cell::hexadecimal(WithToken::new(0xC, code.s1("0xC").token())),
                 ],
                 code.s1(">").token(),
             )
@@ -990,7 +996,7 @@ mod test {
             PropertyValue::Cells(
                 code.s1("<").token(),
                 vec![
-                    Cell::Number(WithToken::new(17, code.s1("17").token())),
+                    Cell::decimal(WithToken::new(17, code.s1("17").token())),
                     Cell::Reference(WithToken::new(
                         Reference::Label("label".into()),
                         code.s1("&label").token(),
