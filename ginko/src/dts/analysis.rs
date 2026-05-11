@@ -517,7 +517,7 @@ impl Analysis {
         for item in &payload.items {
             match item {
                 NodeItem::Property(property) => {
-                    self.analyze_property(ctx, property.clone(), payload)
+                    self.analyze_property(ctx, property.clone(), payload, path)
                 }
                 NodeItem::Node(node) => self.analyze_node(
                     ctx,
@@ -543,26 +543,35 @@ impl Analysis {
         }
     }
 
-    fn check_is_single_string(&mut self, ctx: &mut FileContext<'_>, property: &Property) {
+    fn check_is_single_string(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        property: &Property,
+    ) -> Option<String> {
         if property.values.len() == 1 {
-            if let PropertyValue::String(_) = &property.values[0] {
-                return;
+            if let PropertyValue::String(s) = &property.values[0] {
+                return Some(s.item().clone());
             }
         }
         ctx.add_diagnostic(Diagnostic::new(
             property.span(),
             property.source(),
             ErrorCode::ExpectedString,
-            "property should only contain a single string",
-        ))
+            "property should contain a single string",
+        ));
+        None
     }
 
-    fn check_is_single_u32(&mut self, ctx: &mut FileContext<'_>, property: &Property) {
+    fn check_is_single_u32(
+        &mut self,
+        ctx: &mut FileContext<'_>,
+        property: &Property,
+    ) -> Option<u32> {
         if property.values.len() == 1 {
             if let PropertyValue::Cells(_, cells, _) = &property.values[0] {
                 if cells.len() == 1 {
-                    if let Cell::Number(_) = cells[0] {
-                        return;
+                    if let Cell::Number(n, _) = &cells[0] {
+                        return Some(*n.item());
                     }
                 }
             }
@@ -571,8 +580,9 @@ impl Analysis {
             property.span(),
             property.source(),
             ErrorCode::ExpectedU32,
-            "property should only contain a single number",
-        ))
+            "property should contain a single number",
+        ));
+        None
     }
 
     pub fn analyze_property(
@@ -580,6 +590,7 @@ impl Analysis {
         ctx: &mut FileContext<'_>,
         property: Arc<Property>,
         in_node: &NodePayload,
+        path: &AbsolutePath,
     ) {
         if let Some(label) = &property.label {
             self.context
@@ -591,9 +602,17 @@ impl Analysis {
         }
 
         match property.name.as_str() {
-            "compatible" => self.check_is_string_list(ctx, &property),
-            "model" => self.check_is_single_string(ctx, &property),
-            "phandle" => self.check_is_single_u32(ctx, &property),
+            "compatible" => {
+                self.check_is_string_list(ctx, &property);
+            }
+            "model" => {
+                if path == &ABSOLUTE_ROOT {
+                    self.check_is_single_string(ctx, &property);
+                }
+            }
+            "phandle" => {
+                self.check_is_single_u32(ctx, &property);
+            }
             _ => {}
         }
     }
@@ -619,7 +638,7 @@ impl Analysis {
 
     pub fn analyze_cell(&mut self, ctx: &mut FileContext<'_>, value: &Cell, in_node: &NodePayload) {
         match value {
-            Cell::Number(_) => {}
+            Cell::Number(_, _) => {}
             Cell::Reference(reference) => self.analyze_reference(ctx, reference, in_node),
             Cell::Expression(_) => {}
         }
@@ -1307,7 +1326,7 @@ labeled_referenced: &some_label {
                 )),
                 &ReferenceContext::Root
             ),
-            Some("<0x0>".into())
+            Some("<0>".into())
         );
     }
 
@@ -1344,13 +1363,13 @@ labeled_referenced: &some_label {
                     code.s1("model = \"foo\", \"bar\";").span(),
                     code.source(),
                     ErrorCode::ExpectedString,
-                    "property should only contain a single string"
+                    "property should contain a single string"
                 ),
                 Diagnostic::new(
                     code.s1("phandle = \"wat\";").span(),
                     code.source(),
                     ErrorCode::ExpectedU32,
-                    "property should only contain a single number"
+                    "property should contain a single number"
                 )
             ]
         )

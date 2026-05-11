@@ -150,7 +150,7 @@ impl PropertyValue {
             PropertyValue::Cells(_, cells, _) => {
                 for cell in cells {
                     match cell {
-                        Cell::Number(_) | Cell::Expression(_) => {}
+                        Cell::Number(_, _) | Cell::Expression(_) => {}
                         Cell::Reference(reference) => {
                             if reference.span().contains(cursor) {
                                 return Some(ItemAtCursor::Reference(

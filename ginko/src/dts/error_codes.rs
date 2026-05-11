@@ -31,6 +31,8 @@ pub enum ErrorCode {
     ExpectedU32,
     ExpectedString,
     NotAPropertyContext,
+    UnexpectedSize,
+    UnexpectedFormat,
 }
 
 /// The `SeverityMap` maps error codes to severities.
@@ -72,6 +74,8 @@ impl Default for SeverityMap {
             | NonStringInCompatible
             | ExpectedU32
             | ExpectedString
+            | UnexpectedSize
+            | UnexpectedFormat
             | DuplicateDirective => Severity::Warning
         };
         SeverityMap { inner: map }
