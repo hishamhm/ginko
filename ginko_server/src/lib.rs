@@ -77,6 +77,11 @@ impl Backend {
         self
     }
 
+    pub fn with_canonicalizer(self, f: fn(&Path) -> std::io::Result<PathBuf>) -> Self {
+        self.project.write().set_canonicalizer(f);
+        self
+    }
+
     fn lsp_diag_from_diag(&self, diagnostic: &ginko::dts::Diagnostic) -> Diagnostic {
         let span = diagnostic.span();
         Diagnostic {
