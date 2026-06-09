@@ -71,18 +71,28 @@ pub struct DefaultIncludeLoader {
 impl IncludeLoader for DefaultIncludeLoader {
     fn load(&mut self, relative_to: &Path, file_name: &str) -> Result<PathBuf, io::Error> {
         let include_resolved = self.include_paths.iter().find_map(|include_path| {
-            let path = include_path.join(file_name);
-            dunce::canonicalize(path).ok()
+            let full_path = include_path.join(file_name);
+            if let Ok(true) = std::fs::exists(&full_path) {
+                Some(full_path)
+            } else {
+                None
+            }
         });
         if let Some(include_resolved) = include_resolved {
             Ok(include_resolved)
         } else {
-            dunce::canonicalize(
-                relative_to
-                    .parent()
-                    .map(|p| p.join(file_name))
-                    .unwrap_or_else(|| PathBuf::from(file_name)),
-            )
+            let full_path = relative_to
+                .parent()
+                .map(|p| p.join(file_name))
+                .unwrap_or_else(|| PathBuf::from(file_name));
+            if let Ok(true) = std::fs::exists(&full_path) {
+                Ok(full_path)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("file not found: {file_name}"),
+                ))
+            }
         }
     }
 
