@@ -33,6 +33,8 @@ pub enum ErrorCode {
     NotAPropertyContext,
     UnexpectedSize,
     UnexpectedFormat,
+    CustomError,
+    CustomWarning,
 }
 
 /// The `SeverityMap` maps error codes to severities.
@@ -69,14 +71,16 @@ impl Default for SeverityMap {
             | ErrorsInInclude
             | CyclicDependencyError
             | NotAPropertyContext
-            | IncorrectDirective => Severity::Error,
+            | IncorrectDirective
+            | CustomError => Severity::Error,
             NameTooLong
             | NonStringInCompatible
             | ExpectedU32
             | ExpectedString
             | UnexpectedSize
             | UnexpectedFormat
-            | DuplicateDirective => Severity::Warning
+            | DuplicateDirective
+            | CustomWarning => Severity::Warning
         };
         SeverityMap { inner: map }
     }

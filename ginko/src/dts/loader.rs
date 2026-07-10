@@ -2,6 +2,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use crate::dts::project::ExternalAnalysis;
+
 pub enum IncludeLoaderNotifyAction {
     None,
     Reset,
@@ -12,6 +14,10 @@ pub trait IncludeLoader {
 
     fn notify(&mut self, _path: &Path) -> IncludeLoaderNotifyAction {
         IncludeLoaderNotifyAction::None
+    }
+
+    fn external_analysis(&mut self, _path: &Path, _text: &str) -> Option<ExternalAnalysis> {
+        None
     }
 
     fn set_include_paths(&mut self, include_paths: Vec<String>);
@@ -44,6 +50,11 @@ impl IncludeLoaderGuard {
     pub fn notify(&mut self, path: &Path) -> IncludeLoaderNotifyAction {
         let mut loader = self.inner.lock().expect("could not lock guard");
         loader.notify(path)
+    }
+
+    pub fn external_analysis(&self, path: &Path, text: &str) -> Option<ExternalAnalysis> {
+        let mut loader = self.inner.lock().expect("could not lock guard");
+        loader.external_analysis(path, text)
     }
 
     pub fn set_include_paths(&mut self, include_paths: Vec<String>) {

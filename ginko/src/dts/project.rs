@@ -1,7 +1,7 @@
 use crate::dts::analysis::{Analysis, AnalysisContext};
 use crate::dts::ast::{DtsFile, Include, Reference};
 use crate::dts::data::HasSource;
-use crate::dts::error_codes::SeverityMap;
+use crate::dts::error_codes::{ErrorCode, SeverityMap};
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::ByteReader;
 use crate::dts::tokens::Lexer;
@@ -96,6 +96,16 @@ impl ProjectFile {
     pub fn source(&self) -> &String {
         &self.source
     }
+}
+
+pub struct ExternalDiagnostic {
+    pub path: String,
+    pub message: String,
+}
+
+pub struct ExternalAnalysis {
+    pub errors: Vec<ExternalDiagnostic>,
+    pub warnings: Vec<ExternalDiagnostic>,
 }
 
 #[derive(Default)]
@@ -212,8 +222,47 @@ impl Project {
         // reattach to their previous position in the tree, or, in the case of
         // a new full scan from the root, their will be assigned their correct
         // `parent` values.
-        self.parse_file(&file_name, text, file_type, None, loader);
+        self.parse_file(&file_name, &text, file_type, None, loader);
         self.analyze_tree_for(&file_name, loader);
+        self.do_external_analysis(&file_name, &text, loader);
+    }
+
+    fn get_external_analysis_span(&self, file: &Path, path: &str) -> Option<(Span, Arc<Path>)> {
+        self.get_node_position(
+            file,
+            &Reference::PropertyPath(path.into()),
+            &ReferenceContext::Root,
+        )
+        .or_else(|| {
+            self.get_node_position(file, &Reference::Path(path.into()), &ReferenceContext::Root)
+        })
+    }
+
+    fn do_external_analysis(
+        &mut self,
+        file: &Path,
+        text: &str,
+        loader: &IncludeLoaderGuard,
+    ) -> Option<()> {
+        let external_analysis = loader.external_analysis(file, text)?;
+
+        let mut diagnostics = vec![];
+
+        for (list, kind) in [
+            (external_analysis.errors, ErrorCode::CustomError),
+            (external_analysis.warnings, ErrorCode::CustomWarning),
+        ] {
+            for e in list {
+                if let Some((span, source)) = self.get_external_analysis_span(file, &e.path) {
+                    diagnostics.push(Diagnostic::new(span, source, kind, e.message));
+                }
+            }
+        }
+
+        let proj_file = self.files.get_mut(file)?;
+        proj_file.analysis_diagnostics.append(&mut diagnostics);
+
+        Some(())
     }
 
     fn recursive_analysis(
@@ -362,12 +411,12 @@ impl Project {
     fn parse_file(
         &mut self,
         file_name: &Path,
-        text: String,
+        text: &str,
         file_type: FileType,
         parent: Option<PathBuf>,
         loader: &mut IncludeLoaderGuard,
     ) {
-        let reader = ByteReader::from_string(text.clone());
+        let reader = ByteReader::from_string(text.to_string());
         let lexer = Lexer::new(reader, file_name.into());
 
         let parent = if parent.is_some() {
@@ -410,14 +459,14 @@ impl Project {
                         parser.diagnostics,
                         file_type,
                         file,
-                        text,
+                        text.to_string(),
                     ),
                 );
             }
             Err(err) => {
                 self.files.insert(
                     file_name.to_path_buf(),
-                    ProjectFile::unrecoverable(err, text, file_type),
+                    ProjectFile::unrecoverable(err, text.to_string(), file_type),
                 );
             }
         };
@@ -441,7 +490,7 @@ impl Project {
                     let typ = FileType::from(canonicalized_path.as_path());
                     self.parse_file(
                         &canonicalized_path,
-                        text,
+                        &text,
                         typ,
                         Some(parent.to_path_buf()),
                         loader,
@@ -1012,7 +1061,7 @@ mod tests {
         );
         match project.get_node_position(&file, reference, &ref_ctx) {
             Some((span, path)) => {
-                assert_eq!(span, code.s("prop", 2).span());
+                assert_eq!(span, code.s1("prop = <0>;").span());
                 assert_eq!(
                     path.to_path_buf(),
                     project.canonicalize(&file).expect("File does not exist")

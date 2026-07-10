@@ -23,5 +23,5 @@ pub use loader::{
 };
 pub use parser::Parser;
 pub use parser::ParserConfig;
-pub use project::Project;
+pub use project::{ExternalAnalysis, ExternalDiagnostic, Project};
 pub use visitor::ItemAtCursor;

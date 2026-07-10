@@ -1,9 +1,9 @@
 use itertools::Itertools;
 
 use crate::dts::ast::{
-    ABSOLUTE_ROOT, AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node,
-    NodeItem, NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue,
-    Reference, ReferencedNode, WithToken,
+    AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node, NodeItem,
+    NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue, Reference,
+    ReferencedNode, WithToken, ABSOLUTE_ROOT,
 };
 use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
@@ -196,7 +196,7 @@ impl AnalysisContext {
                 .map(|node| self.get_node_position(&node)),
             Reference::PropertyPath(path) => {
                 let property = self.get_property_from_property_path(path, ctx)?;
-                Some((property.name.span(), property.name.source()))
+                Some((property.span(), property.name.source()))
             }
         }
     }
@@ -1246,7 +1246,7 @@ labeled_referenced: &some_label {
                 )),
                 &ReferenceContext::Root
             ),
-            Some((code.s("prop", 2).span(), code.source()))
+            Some((code.s1("prop = <0>;").span(), code.source()))
         );
     }
 

@@ -257,8 +257,12 @@ fn split_path(path: &str) -> Vec<NodeName> {
         .collect_vec()
 }
 
-impl From<&str> for Path {
-    fn from(value: &str) -> Self {
+impl<S> From<S> for Path
+where
+    S: AsRef<str>,
+{
+    fn from(value: S) -> Self {
+        let value = value.as_ref();
         if value.starts_with('/') {
             Path::Absolute(AbsolutePath {
                 elements: split_path(value),
