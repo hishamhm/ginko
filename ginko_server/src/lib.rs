@@ -96,7 +96,7 @@ impl Backend {
         }
     }
 
-    async fn url_to_file_path(&self, url: Url) -> Option<PathBuf> {
+    async fn url_to_file_path(&self, url: &Url) -> Option<PathBuf> {
         match url.to_file_path() {
             Ok(path) => Some(path),
             Err(_) => {
@@ -164,7 +164,7 @@ impl LanguageServer for Backend {
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         let mut changed = false;
         for change in params.changes {
-            let Some(file_path) = self.url_to_file_path(change.uri).await else {
+            let Some(file_path) = self.url_to_file_path(&change.uri).await else {
                 continue;
             };
 
@@ -228,7 +228,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let Some(file_path) = self.url_to_file_path(params.text_document.uri).await else {
+        let Some(file_path) = self.url_to_file_path(&params.text_document.uri).await else {
             return;
         };
         let file_type = FileType::from(file_path.as_path());
@@ -242,7 +242,7 @@ impl LanguageServer for Backend {
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let Some(file_path) = self.url_to_file_path(params.text_document.uri).await else {
+        let Some(file_path) = self.url_to_file_path(&params.text_document.uri).await else {
             return;
         };
         let file_type = FileType::from(file_path.as_path());
@@ -264,13 +264,7 @@ impl LanguageServer for Backend {
         params: GotoDefinitionParams,
     ) -> Result<Option<GotoDefinitionResponse>> {
         let Some(file_path) = self
-            .url_to_file_path(
-                params
-                    .text_document_position_params
-                    .text_document
-                    .uri
-                    .clone(),
-            )
+            .url_to_file_path(&params.text_document_position_params.text_document.uri)
             .await
         else {
             return Ok(None);
@@ -311,7 +305,7 @@ impl LanguageServer for Backend {
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let Some(file_path) = self
-            .url_to_file_path(params.text_document_position_params.text_document.uri)
+            .url_to_file_path(&params.text_document_position_params.text_document.uri)
             .await
         else {
             return Ok(None);
@@ -343,7 +337,7 @@ impl LanguageServer for Backend {
         &self,
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
-        let Some(file_path) = self.url_to_file_path(params.text_document.uri).await else {
+        let Some(file_path) = self.url_to_file_path(&params.text_document.uri).await else {
             return Ok(None);
         };
         let project = self.project.read();
