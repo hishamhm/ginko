@@ -384,6 +384,7 @@ impl Project {
         let file = self.get_file(path)?;
         let line = file.source.lines().nth(position.line() as usize)?;
         let mut token = String::new();
+
         for (i, c) in line.chars().enumerate() {
             if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '@' || c == '?' || c == '&'
             {

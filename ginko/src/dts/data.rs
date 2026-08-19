@@ -172,6 +172,14 @@ impl Span {
         Span { start, end }
     }
 
+    // Creates a span from the beginning of `start` to the end of `end`.
+    pub fn ranging(start: Span, end: Span) -> Span {
+        Span {
+            start: start.start,
+            end: end.end,
+        }
+    }
+
     pub fn start(&self) -> Position {
         self.start
     }

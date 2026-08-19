@@ -586,14 +586,17 @@ where
             match &tok.kind {
                 TokenKind::OpenBrace => {
                     node_discovered = true;
+                    let node_start = ident.span();
                     let node_name: WithToken<NodeName> = From::from(ident);
                     self.check_is_node_name(node_name.span(), &node_name);
                     let payload = self.node_payload()?;
+                    let node_end = payload.end.span;
                     items.push(NodeItem::Node(Arc::new(Node {
                         omit_if_no_ref,
                         name: node_name,
                         label,
                         payload,
+                        span: Span::ranging(node_start, node_end),
                     })));
                 }
                 TokenKind::Equal => {
@@ -824,24 +827,27 @@ where
                 })))
             }
             TokenKind::Slash => {
-                let root_name = WithToken::new(NodeName::simple("/"), token);
                 let root_payload = self.node_payload()?;
-
+                let span = Span::ranging(token.span, root_payload.end.span);
+                let root_name = WithToken::new(NodeName::simple("/"), token);
                 Ok(Primary::Root(Arc::new(Node {
                     name: root_name,
                     label: None,
                     payload: root_payload,
                     omit_if_no_ref: None,
+                    span,
                 })))
             }
             TokenKind::Ref(reference @ Reference::Simple(_))
             | TokenKind::Ref(reference @ Reference::Path(_)) => {
                 let reference = self.reference(token.clone(), reference);
                 let root_payload = self.node_payload()?;
+                let span = Span::ranging(token.span, root_payload.end.span);
                 Ok(Primary::ReferencedNode(Arc::new(ReferencedNode {
                     label,
                     reference,
                     payload: root_payload,
+                    span,
                 })))
             }
             TokenKind::Ref(Reference::PropertyPath(_)) => Err(Diagnostic::new(
@@ -894,7 +900,7 @@ mod test {
     use crate::dts::test::Code;
     use crate::dts::tokens::CompilerDirective::OmitIfNoRef;
     use crate::dts::tokens::TokenKind::{Directive, Equal, OpenBrace, Semicolon};
-    use crate::dts::{AnyDirective, HasSpan, Position, Primary};
+    use crate::dts::{AnyDirective, HasSpan, Position, Primary, Span};
     use std::sync::Arc;
     use std::vec;
 
@@ -1190,6 +1196,10 @@ mod test {
         );
     }
 
+    fn ranging(start: Code, end: Code) -> Span {
+        Span::ranging(start.token().span, end.token().span)
+    }
+
     #[test]
     pub fn simple_file() {
         let code = Code::new("/ {};");
@@ -1205,7 +1215,8 @@ mod test {
                         items: vec![],
                         end: code.s1(";").token(),
                     },
-                    omit_if_no_ref: None
+                    omit_if_no_ref: None,
+                    span: ranging(code.s1("/"), code.s1(";")),
                 }))],
                 source: code.source(),
             }
@@ -1233,7 +1244,8 @@ mod test {
                             items: vec![],
                             end: code.s(";", 2).token(),
                         },
-                        omit_if_no_ref: None
+                        omit_if_no_ref: None,
+                        span: ranging(code.s1("/{"), code.s(";", 2)),
                     })),
                 ],
                 source: code.source(),
@@ -1276,11 +1288,13 @@ mod test {
                                     items: vec![],
                                     end: code.s(";", 2).token(),
                                 },
-                                omit_if_no_ref: None
+                                omit_if_no_ref: None,
+                                span: ranging(code.s1("sub_node"), code.s(";", 2)),
                             }))],
                             end: code.s(";", 3).token(),
                         },
-                        omit_if_no_ref: None
+                        omit_if_no_ref: None,
+                        span: ranging(code.s1("/{"), code.s(";", 3)),
                     })),
                 ],
                 source: code.source(),
@@ -1320,6 +1334,7 @@ mod test {
                                     NodeName::with_address("pic", "10000000"),
                                     code.s1("pic@10000000").token(),
                                 ),
+                                span: ranging(code.s1("pic@10000000"), code.s(";", 5)),
                                 payload: NodePayload {
                                     items: vec![
                                         NodeItem::Property(Arc::new(Property {
@@ -1359,6 +1374,7 @@ mod test {
                             }))],
                             end: code.s(";", 6).token(),
                         },
+                        span: ranging(code.s1("/ "), code.s(";", 6)),
                     })),
                 ],
                 source: code.source(),
@@ -1430,6 +1446,7 @@ mod test {
                             end: code.s(";", 3).token(),
                         },
                         omit_if_no_ref: None,
+                        span: ranging(code.s1("/ {"), code.s(";", 3)),
                     })),
                 ],
                 source: code.source(),
@@ -1586,11 +1603,13 @@ mod test {
                                     code.s1("node-2-pa").token()
                                 )
                             )]
-                        }
+                        },
+                        span: ranging(code.s1("node-2"), code.s(";", 2)),
                     }))],
                     end: code.s(";", 3).token()
                 },
                 omit_if_no_ref: None,
+                span: ranging(code.s1("/"), code.s(";", 3)),
             }))
         );
     }
@@ -1669,10 +1688,12 @@ mod test {
                                     items: vec![],
                                     end: code.s(";", 2).token(),
                                 },
+                                span: ranging(code.s1("node1 "), code.s(";", 2)),
                             }))],
-                            end: code.s(";", 3).token()
+                            end: code.s(";", 3).token(),
                         },
-                        label: None
+                        label: None,
+                        span: ranging(code.s1("/ "), code.s(";", 3)),
                     }))
                 ]
             }

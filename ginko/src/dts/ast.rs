@@ -530,6 +530,7 @@ pub struct Node {
     pub name: WithToken<NodeName>,
     pub payload: NodePayload,
     pub omit_if_no_ref: Option<Token>,
+    pub span: Span,
 }
 
 #[derive(Eq, PartialEq, Debug)]
@@ -690,6 +691,7 @@ pub struct ReferencedNode {
     pub label: Option<WithToken<String>>,
     pub reference: WithToken<Reference>,
     pub payload: NodePayload,
+    pub span: Span,
 }
 
 impl HasSpan for ReferencedNode {
