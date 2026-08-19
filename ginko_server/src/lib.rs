@@ -143,6 +143,15 @@ impl LanguageServer for Backend {
         Ok(InitializeResult {
             server_info: None,
             capabilities: ServerCapabilities {
+                completion_provider: Some(CompletionOptions {
+                    resolve_provider: Some(false),
+                    trigger_characters: Some(vec!["&".to_string()]),
+                    all_commit_characters: None,
+                    work_done_progress_options: WorkDoneProgressOptions {
+                        work_done_progress: Some(true),
+                    },
+                    completion_item: None,
+                }),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
@@ -258,6 +267,50 @@ impl LanguageServer for Backend {
     async fn did_save(&self, _: DidSaveTextDocumentParams) {}
 
     async fn did_close(&self, _: DidCloseTextDocumentParams) {}
+
+    async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        fn completions_for_reference(
+            project: &Project,
+            file_path: &Path,
+            token: &str,
+        ) -> Option<CompletionResponse> {
+            let analysis = project.get_analysis(file_path)?;
+            Some(CompletionResponse::Array(
+                analysis
+                    .get_labels()
+                    .into_iter()
+                    .filter(|label| label.starts_with(token))
+                    .map(|label| {
+                        let detail = analysis.get_referred_by_label(&label);
+                        CompletionItem {
+                            label,
+                            detail,
+                            ..Default::default()
+                        }
+                    })
+                    .collect(),
+            ))
+        }
+
+        let Some(file_path) = self
+            .url_to_file_path(&params.text_document_position.text_document.uri)
+            .await
+        else {
+            return Ok(None);
+        };
+
+        let pos = position_to_ginko_position(params.text_document_position.position);
+        let project = self.project.read();
+        let Some(token) = project.token_at(&file_path, &pos) else {
+            return Ok(None);
+        };
+
+        if let Some(token) = token.strip_prefix('&') {
+            return Ok(completions_for_reference(&project, &file_path, token));
+        }
+
+        Ok(None)
+    }
 
     async fn goto_definition(
         &self,

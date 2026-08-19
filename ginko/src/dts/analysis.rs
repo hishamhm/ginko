@@ -99,6 +99,10 @@ impl AnalysisContext {
         &self.includes
     }
 
+    pub fn get_labels(&self) -> Vec<String> {
+        self.labels.keys().cloned().collect()
+    }
+
     pub fn get_node_by_label(&self, label: &str) -> Option<&Arc<Node>> {
         match self.labels.get(label) {
             Some(Labeled::Node(node, _)) => Some(node),
@@ -201,24 +205,28 @@ impl AnalysisContext {
         }
     }
 
+    pub fn get_referred_by_label(&self, label: &str) -> Option<String> {
+        match self.labels.get(label) {
+            Some(Labeled::Node(node, _)) => {
+                let mut name = node.name.name.clone();
+                if let Some(unit_address) = &node.name.unit_address {
+                    name += "@";
+                    name += unit_address;
+                }
+                Some(name)
+            }
+            Some(Labeled::ReferencedNode(node)) => node.label.as_deref().cloned(),
+            _ => None,
+        }
+    }
+
     pub fn get_referred(
         &self,
         reference: &Reference,
         ctx: &ReferenceContext<'_>,
     ) -> Option<String> {
         match reference {
-            Reference::Label(label) => match self.labels.get(label) {
-                Some(Labeled::Node(node, _)) => {
-                    let mut name = node.name.name.clone();
-                    if let Some(unit_address) = &node.name.unit_address {
-                        name += "@";
-                        name += unit_address;
-                    }
-                    Some(name)
-                }
-                Some(Labeled::ReferencedNode(node)) => node.label.as_deref().cloned(),
-                _ => None,
-            },
+            Reference::Label(label) => self.get_referred_by_label(label),
             Reference::Path(path) => self
                 .get_node_by_path(path, ctx)
                 .map(|node| node.name.name.clone()),

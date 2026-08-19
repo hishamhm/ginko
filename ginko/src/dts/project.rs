@@ -380,6 +380,24 @@ impl Project {
         file.item_at_cursor(position)
     }
 
+    pub fn token_at(&self, path: &Path, position: &Position) -> Option<String> {
+        let file = self.get_file(path)?;
+        let line = file.source.lines().nth(position.line() as usize)?;
+        let mut token = String::new();
+        for (i, c) in line.chars().enumerate() {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '@' || c == '?' || c == '&'
+            {
+                token.push(c);
+            } else {
+                token.clear();
+            }
+            if i == position.character() as usize - 1 {
+                return Some(token);
+            }
+        }
+        None
+    }
+
     pub fn document_reference(
         &self,
         path: &Path,
