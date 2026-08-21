@@ -1,9 +1,9 @@
-use crate::dts::analysis::{Analysis, AnalysisContext, AnalysisResult};
+use crate::dts::analysis::{Analysis, AnalysisContext};
 use crate::dts::data::HasSource;
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::{ByteReader, Reader};
 use crate::dts::tokens::{Lexer, Token};
-use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Project, Span};
+use crate::dts::{Diagnostic, HasSpan, Parser, ParserConfig, Position, Project, Span};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -114,15 +114,10 @@ impl Code {
     }
 
     pub fn get_analyzed_file(&self) -> (Vec<Diagnostic>, AnalysisContext) {
-        let (file, mut parse_diagnostics) = self.parse_ok(Parser::file);
+        let (file, parse_diagnostics) = self.parse_ok(Parser::file);
         let fake_project = Project::default();
         let loader = IncludeLoaderGuard::default();
-        let mut analysis = Analysis::new(None, &loader);
-        let AnalysisResult {
-            mut diagnostics, ..
-        } = analysis.analyze_file(&file, FileType::DtSource, &fake_project);
-        diagnostics.append(&mut parse_diagnostics);
-        (diagnostics, analysis.into_context())
+        Analysis::new(None, &loader).analyze_file_for_test(&file, &fake_project, parse_diagnostics)
     }
 
     fn in_range(&self, span: Span) -> Code {

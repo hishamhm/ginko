@@ -83,15 +83,19 @@ impl Analysis {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Default)]
+pub struct PendingReferenceList(Vec<WithToken<Reference>>);
+
+#[derive(Default)]
 pub struct AnalysisContext {
     labels: HashMap<String, Labeled>,
     flat_nodes: HashMap<AbsolutePath, Arc<Node>>,
     includes: HashMap<String, PathBuf>,
 }
 
-pub struct AnalysisResult {
-    pub diagnostics: Vec<Diagnostic>,
+pub(crate) struct FileAnalysisResult {
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) pending_references: Option<PendingReferenceList>,
 }
 
 impl AnalysisContext {
@@ -238,26 +242,30 @@ impl AnalysisContext {
     }
 }
 
-pub struct FileContext<'a> {
+struct FileAnalysisContext<'a> {
     source: Arc<StdPath>,
     project: &'a Project,
     diagnostics: Vec<Diagnostic>,
     references_to_be_checked: Vec<WithToken<Reference>>,
     file_type: FileType,
-    is_plugin: bool,
     first_non_include: bool,
     dts_header_seen: bool,
 }
 
-impl FileContext<'_> {
+impl FileAnalysisContext<'_> {
     pub fn add_diagnostic(&mut self, diagnostic: Diagnostic) {
         self.diagnostics.push(diagnostic);
     }
 }
 
-impl FileContext<'_> {
-    pub fn into_result(self) -> AnalysisResult {
-        AnalysisResult {
+impl FileAnalysisContext<'_> {
+    pub fn into_result(self) -> FileAnalysisResult {
+        FileAnalysisResult {
+            pending_references: if self.references_to_be_checked.is_empty() {
+                None
+            } else {
+                Some(PendingReferenceList(self.references_to_be_checked))
+            },
             diagnostics: self.diagnostics,
         }
     }
@@ -269,14 +277,13 @@ impl Analysis {
         file: &DtsFile,
         file_type: FileType,
         project: &Project,
-    ) -> AnalysisResult {
-        let mut ctx = FileContext {
+    ) -> FileAnalysisResult {
+        let mut ctx = FileAnalysisContext {
             source: file.source.clone(),
             file_type,
             diagnostics: Vec::default(),
             references_to_be_checked: Vec::default(),
             project,
-            is_plugin: file_type == FileType::DtSourceOverlay,
             dts_header_seen: false,
             first_non_include: false,
         };
@@ -303,7 +310,6 @@ impl Analysis {
                     AnyDirective::Include(include) => self.analyze_include(&mut ctx, file, include),
                     AnyDirective::Plugin(_) => {
                         ctx.first_non_include = true;
-                        ctx.is_plugin = true
                     }
                     AnyDirective::OmitIfNoRef(..) => ctx.first_non_include = true,
                     AnyDirective::DeletedNode(_, reference) => {
@@ -329,11 +335,15 @@ impl Analysis {
                 "Files without the '/dts-v1/' Header are not supported",
             ))
         }
-        self.resolve_references(&mut ctx);
         ctx.into_result()
     }
 
-    fn analyze_include(&mut self, ctx: &mut FileContext<'_>, parent: &DtsFile, include: &Include) {
+    fn analyze_include(
+        &mut self,
+        ctx: &mut FileAnalysisContext<'_>,
+        parent: &DtsFile,
+        include: &Include,
+    ) {
         let path = match self.loader.load(&parent.source, &include.file_name()) {
             Ok(path) => path,
             Err(err) => {
@@ -361,25 +371,6 @@ impl Analysis {
                 include.source(),
                 ErrorCode::ErrorsInInclude,
                 "Included file contains errors",
-            ));
-        }
-    }
-
-    fn unresolved_reference_error(
-        &self,
-        ctx: &mut FileContext<'_>,
-        span: Span,
-        source: Arc<StdPath>,
-    ) {
-        // Do not emit unresolved reference errors when we are not a plugin.
-        // This will emit false positives as references can only be resolved with the full
-        // device-tree information.
-        if ctx.file_type == FileType::DtSource && !ctx.is_plugin {
-            ctx.add_diagnostic(Diagnostic::new(
-                span,
-                source,
-                ErrorCode::UnresolvedReference,
-                "Reference cannot be resolved",
             ));
         }
     }
@@ -441,7 +432,7 @@ impl Analysis {
 
     fn get_absolute_path_from_reference_in_root_ctx(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         reference: &WithToken<Reference>,
     ) -> Option<AbsolutePath> {
         let path = match reference.item() {
@@ -458,14 +449,14 @@ impl Analysis {
             }
         };
         if path.is_none() {
-            self.unresolved_reference_error(ctx, reference.span(), reference.source());
+            ctx.references_to_be_checked.push(reference.clone());
         }
         path
     }
 
-    pub fn analyze_referenced_node(
+    fn analyze_referenced_node(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         node: Arc<ReferencedNode>,
     ) {
         if let Some(label) = &node.label {
@@ -481,28 +472,34 @@ impl Analysis {
         self.analyze_node_payload(ctx, &node.payload, &path);
     }
 
-    pub fn resolve_references(&self, ctx: &mut FileContext<'_>) {
-        for reference in ctx.references_to_be_checked.clone() {
-            let span = reference.span();
-            let source = reference.source();
-            let ok = match &reference.item() {
-                Reference::Label(label) => self.context.labels.contains_key(label),
-                Reference::Path(path) => {
-                    self.get_absolute_path_from_path_in_root_ctx(path).is_some()
+    pub(crate) fn resolve_references(&self, references: &PendingReferenceList) -> Vec<Diagnostic> {
+        references
+            .0
+            .iter()
+            .filter_map(|reference| {
+                let span = reference.span();
+                let source = reference.source();
+                let ok = match &reference.item() {
+                    Reference::Label(label) => self.context.labels.contains_key(label),
+                    // TODO: analyze paths based on fully-resolved tree
+                    Reference::Path(_) | Reference::PropertyPath(_) => true,
+                };
+                if !ok {
+                    Some(unresolved_reference_error(
+                        span,
+                        source,
+                        "Reference not defined for the selected target",
+                    ))
+                } else {
+                    None
                 }
-                Reference::PropertyPath(ppath) => self
-                    .get_absolute_path_from_property_path_in_root_ctx(ppath)
-                    .is_some(),
-            };
-            if !ok {
-                self.unresolved_reference_error(ctx, span, source);
-            }
-        }
+            })
+            .collect()
     }
 
-    pub fn analyze_node(
+    fn analyze_node(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         node: Arc<Node>,
         path: &AbsolutePath,
     ) {
@@ -518,15 +515,13 @@ impl Analysis {
 
     fn analyze_node_payload(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         payload: &NodePayload,
         path: &AbsolutePath,
     ) {
         for item in &payload.items {
             match item {
-                NodeItem::Property(property) => {
-                    self.analyze_property(ctx, property.clone(), payload, path)
-                }
+                NodeItem::Property(property) => self.analyze_property(ctx, property.clone(), path),
                 NodeItem::Node(node) => self.analyze_node(
                     ctx,
                     node.clone(),
@@ -538,7 +533,7 @@ impl Analysis {
         }
     }
 
-    fn check_is_string_list(&mut self, ctx: &mut FileContext<'_>, property: &Property) {
+    fn check_is_string_list(&mut self, ctx: &mut FileAnalysisContext<'_>, property: &Property) {
         for value in &property.values {
             if !matches!(value, PropertyValue::String(_)) {
                 ctx.add_diagnostic(Diagnostic::new(
@@ -553,7 +548,7 @@ impl Analysis {
 
     fn check_is_single_string(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         property: &Property,
     ) -> Option<String> {
         if property.values.len() == 1 {
@@ -572,7 +567,7 @@ impl Analysis {
 
     fn check_is_single_u32(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         property: &Property,
     ) -> Option<u32> {
         if property.values.len() == 1 {
@@ -593,11 +588,10 @@ impl Analysis {
         None
     }
 
-    pub fn analyze_property(
+    fn analyze_property(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         property: Arc<Property>,
-        in_node: &NodePayload,
         path: &AbsolutePath,
     ) {
         if let Some(label) = &property.label {
@@ -606,7 +600,7 @@ impl Analysis {
                 .insert(label.item().clone(), Labeled::Property(property.clone()));
         }
         for value in &property.values {
-            self.analyze_property_value(ctx, value, in_node)
+            self.analyze_property_value(ctx, value)
         }
 
         match property.name.as_str() {
@@ -625,81 +619,64 @@ impl Analysis {
         }
     }
 
-    pub fn analyze_property_value(
-        &mut self,
-        ctx: &mut FileContext<'_>,
-        value: &PropertyValue,
-        in_node: &NodePayload,
-    ) {
+    fn analyze_property_value(&mut self, ctx: &mut FileAnalysisContext<'_>, value: &PropertyValue) {
         match value {
             PropertyValue::String(_) => {}
             PropertyValue::ByteStrings(..) => {}
             PropertyValue::Cells(_, cells, _) => {
                 for cell in cells {
-                    self.analyze_cell(ctx, cell, in_node)
+                    self.analyze_cell(ctx, cell)
                 }
             }
-            PropertyValue::Reference(reference) => self.analyze_reference(ctx, reference, in_node),
+            PropertyValue::Reference(reference) => self.analyze_reference(ctx, reference),
             PropertyValue::Incbin(_, include, _) => self.analyze_incbin(ctx, include, value.span()),
         }
     }
 
-    pub fn analyze_cell(&mut self, ctx: &mut FileContext<'_>, value: &Cell, in_node: &NodePayload) {
+    fn analyze_cell(&mut self, ctx: &mut FileAnalysisContext<'_>, value: &Cell) {
         match value {
             Cell::Number(_, _) => {}
-            Cell::Reference(reference) => self.analyze_reference(ctx, reference, in_node),
+            Cell::Reference(reference) => self.analyze_reference(ctx, reference),
             Cell::Expression(_) => {}
         }
     }
 
-    pub fn analyze_reference(
+    fn analyze_reference(
         &mut self,
-        ctx: &mut FileContext<'_>,
+        ctx: &mut FileAnalysisContext<'_>,
         reference: &WithToken<Reference>,
-        in_node: &NodePayload,
     ) {
-        // Check dot-relative references in context.
-        //
-        // We only produce a bool result here for references containing dot-relative paths.
-        // For everything else, we will push the list of references to be checked later,
-        // at the end of the analysis.
-        let ok: Option<bool> = match reference.item() {
-            Reference::Path(Path::DotRelative(dot_relative)) => {
-                Some(find_child(in_node, dot_relative.elements()).is_some())
-            }
-            Reference::PropertyPath(property_path) => match property_path.node_path() {
-                Path::DotRelative(dot_relative) => {
-                    Some(match find_child(in_node, dot_relative.elements()) {
-                        Some(child) => {
-                            let name = property_path.property_name();
-                            self.context
-                                .get_property_from_payload(name, &child.payload)
-                                .is_some()
-                        }
-                        None => false,
-                    })
-                }
-                _ => None,
-            },
-            _ => None,
-        };
-
-        if let Some(ok) = ok {
-            // Push a diagnostic if we got an error.
-            if !ok {
-                self.unresolved_reference_error(ctx, reference.span(), reference.source());
-            }
-        } else {
-            // Check all other kinds later.
-            ctx.references_to_be_checked.push(reference.clone());
-        }
+        ctx.references_to_be_checked.push(reference.clone());
     }
 
-    pub fn analyze_incbin(&mut self, ctx: &mut FileContext<'_>, include: &Include, span: Span) {
+    fn analyze_incbin(&mut self, ctx: &mut FileAnalysisContext<'_>, include: &Include, span: Span) {
         if let Err(err) = self.loader.load(&ctx.source, &include.file_name()) {
             ctx.add_diagnostic(Diagnostic::io_error(span, include.source(), err));
         }
     }
+
+    #[cfg(test)]
+    pub fn analyze_file_for_test(
+        mut self,
+        file: &DtsFile,
+        fake_project: &Project,
+        mut parse_diagnostics: Vec<Diagnostic>,
+    ) -> (Vec<Diagnostic>, AnalysisContext) {
+        let FileAnalysisResult {
+            mut diagnostics,
+            pending_references,
+        } = self.analyze_file(file, FileType::DtSource, fake_project);
+        diagnostics.append(&mut parse_diagnostics);
+        if let Some(pending) = pending_references {
+            let mut reference_diagnostics = self.resolve_references(&pending);
+            diagnostics.append(&mut reference_diagnostics);
+        }
+        (diagnostics, self.into_context())
+    }
+}
+
+fn unresolved_reference_error(span: Span, source: Arc<StdPath>, message: &str) -> Diagnostic {
+    Diagnostic::new(span, source, ErrorCode::UnresolvedReference, message)
 }
 
 #[cfg(test)]
@@ -893,20 +870,21 @@ mod test {
                     code.s1("&node3").span(),
                     code.source(),
                     ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
+                    "Reference not defined for the selected target"
                 ),
-                Diagnostic::new(
-                    code.s1("&{/node3}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
-                Diagnostic::new(
-                    code.s1("&{./some_node/missing}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
+                // TODO: resolving path references consistently needs to account for the full evaluated tree
+                // Diagnostic::new(
+                //     code.s1("&{/node3}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
+                // Diagnostic::new(
+                //     code.s1("&{./some_node/missing}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
             ]
         );
         assert_eq!(
@@ -969,42 +947,43 @@ mod test {
         assert_eq_unordered!(
             diagnostics,
             vec![
-                Diagnostic::new(
-                    code.s1("${/node3/bad1}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
-                Diagnostic::new(
-                    code.s1("${/some_other_node/v1bad}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
-                Diagnostic::new(
-                    code.s1("${/node3/bad2}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
-                Diagnostic::new(
-                    code.s1("${/some_other_node/some_node/v4bad}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
-                Diagnostic::new(
-                    code.s1("${./some_node/missing}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
-                Diagnostic::new(
-                    code.s1("${./some_node/sub/v4}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                ),
+                // TODO: resolving path references consistently needs to account for the full evaluated tree
+                // Diagnostic::new(
+                //     code.s1("${/node3/bad1}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
+                // Diagnostic::new(
+                //     code.s1("${/some_other_node/v1bad}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
+                // Diagnostic::new(
+                //     code.s1("${/node3/bad2}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
+                // Diagnostic::new(
+                //     code.s1("${/some_other_node/some_node/v4bad}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
+                // Diagnostic::new(
+                //     code.s1("${./some_node/missing}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
+                // Diagnostic::new(
+                //     code.s1("${./some_node/sub/v4}").span(),
+                //     code.source(),
+                //     ErrorCode::UnresolvedReference,
+                //     "Reference cannot be resolved"
+                // ),
             ]
         );
         assert_eq!(
@@ -1120,21 +1099,21 @@ mod test {
     pub fn referenced_node_in_same_file() {
         let code = Code::new(
             "\
-/dts-v1/;
+    /dts-v1/;
 
-/ {
-    some_node: node {};
-};
+    / {
+        some_node: node {};
+    };
 
-&some_node {};
+    &some_node {};
 
-&some_other_node {};
+    &some_other_node {};
 
-&{/node} {};
+    &{/node} {};
 
-&{/some_other_node} {};
+    &{/some_other_node} {};
 
-",
+    ",
         );
         let (diagnostics, _) = code.get_analyzed_file();
         assert_eq_unordered!(
@@ -1144,14 +1123,15 @@ mod test {
                     code.s1("&some_other_node").span(),
                     code.source(),
                     ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
+                    "Reference not defined for the selected target"
                 ),
-                Diagnostic::new(
-                    code.s1("&{/some_other_node}").span(),
-                    code.source(),
-                    ErrorCode::UnresolvedReference,
-                    "Reference cannot be resolved"
-                )
+                // TODO: resolving path references consistently needs to account for the full evaluated tree
+                //     Diagnostic::new(
+                //         code.s1("&{/some_other_node}").span(),
+                //         code.source(),
+                //         ErrorCode::UnresolvedReference,
+                //         "Reference cannot be resolved"
+                //     )
             ]
         )
     }

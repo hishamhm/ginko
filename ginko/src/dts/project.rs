@@ -1,4 +1,4 @@
-use crate::dts::analysis::{Analysis, AnalysisContext};
+use crate::dts::analysis::{Analysis, AnalysisContext, PendingReferenceList};
 use crate::dts::ast::{DtsFile, Include, Reference};
 use crate::dts::data::HasSource;
 use crate::dts::error_codes::{ErrorCode, SeverityMap};
@@ -13,10 +13,11 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::{fs, io};
 
-pub enum AnalysisStatus {
+enum AnalysisStatus {
     NotAnalyzed,
     Root(AnalysisContext),
-    Child,
+    PendingReferences(PendingReferenceList),
+    ChildAnalysisDone,
 }
 
 pub struct ProjectFile {
@@ -27,7 +28,7 @@ pub struct ProjectFile {
     pub(crate) file: Option<DtsFile>,
     pub(crate) file_type: FileType,
     pub(crate) source: String,
-    pub(crate) analysis_status: AnalysisStatus,
+    analysis_status: AnalysisStatus,
 }
 
 impl ProjectFile {
@@ -285,7 +286,12 @@ impl Project {
         if let Some(dts_file) = &proj_file.file {
             let result = analysis.analyze_file(dts_file, proj_file.file_type, self);
             let proj_file = self.files.get_mut(file)?;
-            proj_file.analysis_status = AnalysisStatus::Child;
+            proj_file.analysis_status = if let Some(pending_references) = result.pending_references
+            {
+                AnalysisStatus::PendingReferences(pending_references)
+            } else {
+                AnalysisStatus::ChildAnalysisDone
+            };
             proj_file.parent = parent.map(Path::to_path_buf);
             proj_file.analysis_diagnostics = result.diagnostics;
         }
@@ -324,6 +330,18 @@ impl Project {
         let mut seen = BTreeSet::new();
 
         self.recursive_analysis(&mut analysis, &root, None, &mut seen);
+
+        for proj_file in self.files.values_mut() {
+            if let AnalysisStatus::PendingReferences(pending_references) =
+                &proj_file.analysis_status
+            {
+                let unresolved = analysis.resolve_references(pending_references);
+                proj_file
+                    .analysis_diagnostics
+                    .extend_from_slice(&unresolved);
+                proj_file.analysis_status = AnalysisStatus::ChildAnalysisDone;
+            }
+        }
 
         let Some(proj_file) = self.files.get_mut(&root) else {
             return;
@@ -1045,7 +1063,6 @@ mod tests {
         );
 
         let mut project = Project::default();
-        eprintln!("{}", file.display());
         let mut loader = IncludeLoaderGuard::default();
 
         project
