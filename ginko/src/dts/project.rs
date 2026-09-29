@@ -15,7 +15,7 @@ use std::{fs, io};
 
 enum AnalysisStatus {
     NotAnalyzed,
-    Root(AnalysisContext),
+    Root(Box<AnalysisContext>),
     PendingReferences(PendingReferenceList),
     ChildAnalysisDone,
 }
@@ -346,7 +346,7 @@ impl Project {
         let Some(proj_file) = self.files.get_mut(&root) else {
             return;
         };
-        proj_file.analysis_status = AnalysisStatus::Root(analysis.into_context())
+        proj_file.analysis_status = AnalysisStatus::Root(Box::new(analysis.into_context()))
     }
 
     pub fn get_diagnostics(&self, path: &Path) -> Box<dyn Iterator<Item = &Diagnostic> + '_> {

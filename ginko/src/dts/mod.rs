@@ -9,6 +9,7 @@ mod loader;
 mod parser;
 mod project;
 mod reader;
+mod resolved;
 #[cfg(test)]
 mod test;
 mod tokens;
@@ -24,4 +25,5 @@ pub use loader::{
 pub use parser::Parser;
 pub use parser::ParserConfig;
 pub use project::{ExternalAnalysis, ExternalDiagnostic, Project};
+pub use resolved::ResolvedNode;
 pub use visitor::ItemAtCursor;

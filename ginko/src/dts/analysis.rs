@@ -9,6 +9,7 @@ use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
 use crate::dts::import_guard::ImportGuard;
 use crate::dts::loader::IncludeLoaderGuard;
+use crate::dts::resolved::ResolvedTree;
 use crate::dts::visitor::ReferenceContext;
 use crate::dts::{Diagnostic, FileType, Position, Project};
 use std::collections::HashMap;
@@ -91,6 +92,7 @@ pub struct AnalysisContext {
     labels: HashMap<String, Labeled>,
     flat_nodes: HashMap<AbsolutePath, Arc<Node>>,
     includes: HashMap<String, PathBuf>,
+    resolved: ResolvedTree,
 }
 
 pub(crate) struct FileAnalysisResult {
@@ -105,6 +107,10 @@ impl AnalysisContext {
 
     pub fn get_labels(&self) -> Vec<String> {
         self.labels.keys().cloned().collect()
+    }
+
+    pub fn get_resolved_tree(&self) -> &ResolvedTree {
+        &self.resolved
     }
 
     pub fn get_node_by_label(&self, label: &str) -> Option<&Arc<Node>> {
@@ -503,6 +509,10 @@ impl Analysis {
         node: Arc<Node>,
         path: &AbsolutePath,
     ) {
+        self.context
+            .resolved
+            .add_node(path, node.clone(), ctx.source.clone());
+
         if let Some(label) = &node.label {
             self.context.labels.insert(
                 label.item().clone(),
@@ -527,8 +537,12 @@ impl Analysis {
                     node.clone(),
                     &path.with_child(node.name.item().clone()),
                 ),
-                NodeItem::DeletedNode(..) => {}
-                NodeItem::DeletedProperty(..) => {}
+                NodeItem::DeletedNode(_, name) => {
+                    self.context.resolved.delete_node(path, name);
+                }
+                NodeItem::DeletedProperty(_, name) => {
+                    self.context.resolved.delete_property(path, name);
+                }
             }
         }
     }
@@ -594,6 +608,13 @@ impl Analysis {
         property: Arc<Property>,
         path: &AbsolutePath,
     ) {
+        self.context.resolved.add_property(
+            path,
+            property.name.as_str(),
+            property.clone(),
+            ctx.source.clone(),
+        );
+
         if let Some(label) = &property.label {
             self.context
                 .labels
