@@ -391,7 +391,7 @@ impl Display for Cell {
             Cell::Number(num, NumberRepr::Octal) => write!(f, "0{:o}", *num.item() as i32),
             Cell::Number(num, NumberRepr::Decimal) => write!(f, "{num}"),
             Cell::Reference(reference) => write!(f, "{reference}"),
-            Cell::Expression(exp) => write!(f, "{exp}"),
+            Cell::Expression(exp) => write!(f, "({exp})"),
         }
     }
 }
@@ -450,11 +450,11 @@ impl Display for PropertyValue {
             PropertyValue::ByteStrings(_, strings, _) => {
                 write!(f, "[")?;
                 for (i, numbers) in strings.iter().enumerate() {
-                    for num in &numbers.item {
-                        write!(f, "{num:2x}")?;
-                    }
-                    if i != strings.len() - 1 {
+                    if i > 0 {
                         write!(f, " ")?;
+                    }
+                    for num in &numbers.item {
+                        write!(f, "{num:02x}")?;
                     }
                 }
                 write!(f, "]")
