@@ -189,6 +189,13 @@ pub struct LabelRelativePath {
 }
 
 impl LabelRelativePath {
+    pub fn new(label: &str) -> Self {
+        Self {
+            label: label.to_string(),
+            elements: vec![],
+        }
+    }
+
     pub fn elements(&self) -> &[NodeName] {
         &self.elements
     }
@@ -235,6 +242,16 @@ impl Path {
 
     pub fn new_label_relative(label: String, elements: Vec<NodeName>) -> Path {
         Path::LabelRelative(LabelRelativePath { label, elements })
+    }
+
+    pub fn with_child(&self, child: NodeName) -> Path {
+        let mut new_path = self.clone();
+        match &mut new_path {
+            Path::Absolute(p) => p.elements.push(child),
+            Path::DotRelative(p) => p.elements.push(child),
+            Path::LabelRelative(p) => p.elements.push(child),
+        }
+        new_path
     }
 
     pub fn empty() -> Path {
