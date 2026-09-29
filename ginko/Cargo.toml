@@ -22,3 +22,6 @@ url = "2"
 tempfile = "3"
 assert_unordered = "0.3.5"
 snapbox = "1"
+
+[lints]
+workspace = true

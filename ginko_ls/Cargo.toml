@@ -16,3 +16,6 @@ tower-lsp = "0.20.0"
 tracing-subscriber = "0.3.18"
 ginko_server = { version = "^0.0.8", path = "../ginko_server" }
 clap = { version = "4", features = ["derive"] }
+
+[lints]
+workspace = true

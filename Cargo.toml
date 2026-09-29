@@ -1,3 +1,5 @@
 [workspace]
 resolver = "2"
 members = ["ginko", "ginko_ls", "ginko_server"]
+
+[workspace.lints]
