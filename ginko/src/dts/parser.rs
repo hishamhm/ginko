@@ -473,17 +473,20 @@ where
                     close_paren,
                 ))
             }
-            _ => Err(Diagnostic::expected(
-                tok.span(),
-                tok.source(),
-                &[
-                    TokenKind::String("".to_string()),
-                    TokenKind::ChevronLeft,
-                    TokenKind::Ref(Reference::Simple("".to_string())),
-                    TokenKind::OpenBracket,
-                    TokenKind::Directive(CompilerDirective::Incbin),
-                ],
-            )),
+            _ => {
+                self.diagnostics.push(Diagnostic::expected(
+                    tok.span(),
+                    tok.source(),
+                    &[
+                        TokenKind::String("".to_string()),
+                        TokenKind::ChevronLeft,
+                        TokenKind::Ref(Reference::Simple("".to_string())),
+                        TokenKind::OpenBracket,
+                        TokenKind::Directive(CompilerDirective::Incbin),
+                    ],
+                ));
+                Ok(PropertyValue::Cells(tok.clone(), vec![], tok))
+            }
         }
     }
 
@@ -651,7 +654,7 @@ where
                     items.push(NodeItem::Property(Arc::new(prop)));
                 }
                 _ => {
-                    return Err(Diagnostic::expected(
+                    self.diagnostics.push(Diagnostic::expected(
                         self.lexer.last_pos().as_span(),
                         self.lexer.source(),
                         &[
