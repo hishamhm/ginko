@@ -2,7 +2,7 @@ use crate::dts::data::HasSource;
 use crate::dts::tokens::Token;
 use crate::dts::{HasSpan, Span};
 use itertools::Itertools;
-use std::fmt::{Display, Formatter, LowerHex};
+use std::fmt::{Display, Formatter, LowerHex, Write};
 use std::ops::Deref;
 use std::path::Path as StdPath;
 use std::sync::Arc;
@@ -505,6 +505,24 @@ impl Property {
             end,
         }
     }
+
+    fn write_values<W: Write>(&self, out: &mut W) -> std::fmt::Result {
+        if !self.values.is_empty() {
+            for (i, value) in self.values.iter().enumerate() {
+                write!(out, "{value}")?;
+                if i != self.values.len() - 1 {
+                    write!(out, ", ")?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn display_values(&self) -> String {
+        let mut out = String::new();
+        self.write_values(&mut out).unwrap();
+        out
+    }
 }
 
 impl Display for Property {
@@ -513,12 +531,7 @@ impl Display for Property {
             writeln!(f, "{};", self.name)
         } else {
             write!(f, "{} = ", self.name)?;
-            for (i, value) in self.values.iter().enumerate() {
-                write!(f, "{value}")?;
-                if i != self.values.len() - 1 {
-                    write!(f, ", ")?;
-                }
-            }
+            self.write_values(f)?;
             writeln!(f, ";")
         }
     }
