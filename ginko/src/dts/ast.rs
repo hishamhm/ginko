@@ -1,6 +1,6 @@
 use crate::dts::data::HasSource;
 use crate::dts::tokens::Token;
-use crate::dts::{HasSpan, Span};
+use crate::dts::{HasSpan, Position, Span};
 use itertools::Itertools;
 use std::fmt::{Display, Formatter, LowerHex, Write};
 use std::ops::Deref;
@@ -567,6 +567,37 @@ pub struct Node {
     pub span: Span,
 }
 
+impl Node {
+    pub fn reference_at(&self, path: &Path, position: &Position) -> Option<Reference> {
+        if !self.span.contains(position) {
+            return None;
+        }
+        self.payload
+            .reference_at(path, position)
+            .or_else(|| Some(Reference::Path(path.clone())))
+    }
+}
+
+impl NodePayload {
+    fn reference_at(&self, path: &Path, position: &Position) -> Option<Reference> {
+        for item in &self.items {
+            match item {
+                NodeItem::Property(property) if property.span().contains(position) => {
+                    return Some(Reference::PropertyPath(PropertyPath {
+                        node_path: path.clone(),
+                        property_name: property.name.to_string(),
+                    }));
+                }
+                NodeItem::Node(node) if node.span().contains(position) => {
+                    return node.reference_at(&path.with_child(node.name.item.clone()), position);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
 #[derive(Eq, PartialEq, Debug)]
 pub enum NodeItem {
     Property(Arc<Property>),
@@ -726,6 +757,22 @@ pub struct ReferencedNode {
     pub reference: WithToken<Reference>,
     pub payload: NodePayload,
     pub span: Span,
+}
+
+impl ReferencedNode {
+    pub fn reference_at(&self, position: &Position) -> Option<Reference> {
+        if !self.span.contains(position) {
+            return None;
+        }
+        let path = match &*self.reference {
+            Reference::Label(label) => Path::LabelRelative(LabelRelativePath::new(label)),
+            Reference::Path(path) => path.clone(),
+            Reference::PropertyPath(_) => return None,
+        };
+        self.payload
+            .reference_at(&path, position)
+            .or(Some(Reference::Path(path)))
+    }
 }
 
 impl HasSpan for ReferencedNode {
