@@ -86,6 +86,7 @@ impl Node {
         }
         self.payload
             .item_at_cursor(cursor, &ReferenceContext::Node(self))
+            .or(Some(ItemAtCursor::Node(self)))
     }
 }
 
