@@ -29,6 +29,11 @@ impl Location {
     }
 }
 
+pub enum ResolvedContext<'a> {
+    Node(&'a ResolvedNode),
+    Property(&'a ResolvedProperty),
+}
+
 pub struct ResolvedProperty {
     deleted: bool,
     inner: Arc<Property>,
@@ -52,6 +57,10 @@ impl ResolvedNode {
                 Some(name.to_string())
             }
         })
+    }
+
+    pub fn get_property(&self, name: &str) -> Option<&ResolvedProperty> {
+        self.properties.get(name)
     }
 
     pub fn active_child_properties<'a>(

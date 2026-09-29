@@ -1,7 +1,7 @@
 use ginko::dts::{
     AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
-    ItemAtCursor, Node, NodeItem, NodePayload, ParserConfig, Primary, Project, ResolvedNode,
-    Severity, SeverityMap, Span,
+    ItemAtCursor, Node, NodeItem, NodePayload, ParserConfig, Primary, Project, ResolvedContext,
+    ResolvedNode, Severity, SeverityMap, Span,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -383,23 +383,31 @@ impl LanguageServer for Backend {
 
         // Check if cursor is on a "node context" (e.g. inside node brackets),
         // or not (e.g. at the toplevel).
-        if let Some(rnode) = project.node_at(&file_path, &pos) {
-            if let Some(token) = token.strip_prefix('&') {
-                return Ok(completions_for_reference(&project, &file_path, token));
-            }
+        match project.context_at(&file_path, &pos) {
+            Some(ResolvedContext::Node(rnode)) => {
+                if let Some(token) = token.strip_prefix('&') {
+                    return Ok(completions_for_reference(&project, &file_path, token));
+                }
 
-            return Ok(completions_for_node(rnode));
-        } else {
-            if let Some(token) = token.strip_prefix('&') {
-                return Ok(completions_for_referenced_node(&project, &file_path, token));
+                return Ok(completions_for_node(rnode));
             }
+            Some(ResolvedContext::Property(_)) => {
+                if let Some(token) = token.strip_prefix('&') {
+                    return Ok(completions_for_reference(&project, &file_path, token));
+                }
+            }
+            None => {
+                if let Some(token) = token.strip_prefix('&') {
+                    return Ok(completions_for_referenced_node(&project, &file_path, token));
+                }
 
-            if let Some(context) = params.context {
-                if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER
-                    && context.trigger_character == Some("/".to_string())
-                    && params.text_document_position.position.character == 1
-                {
-                    return Ok(completions_for_root());
+                if let Some(context) = params.context {
+                    if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER
+                        && context.trigger_character == Some("/".to_string())
+                        && params.text_document_position.position.character == 1
+                    {
+                        return Ok(completions_for_root());
+                    }
                 }
             }
         }
@@ -419,28 +427,23 @@ impl LanguageServer for Backend {
         };
         let pos = position_to_ginko_position(params.text_document_position_params.position);
         let project = self.project.read();
-        let Some(item) = project.find_at_pos(&file_path, &pos) else {
-            return Ok(None);
-        };
 
-        match item {
-            ItemAtCursor::Node(_) => match project.node_at(&file_path, &pos) {
-                Some(rnode) => {
-                    return Ok(Some(GotoDefinitionResponse::Array(
-                        rnode
-                            .sources()
-                            .map(|loc| {
-                                Location::new(
-                                    Url::from_file_path(loc.file()).unwrap(),
-                                    ginko_span_to_range(loc.span()),
-                                )
-                            })
-                            .collect(),
-                    )));
-                }
-                None => Ok(None),
-            },
-            _ => Ok(None),
+        match project.context_at(&file_path, &pos) {
+            Some(ResolvedContext::Node(rnode)) => {
+                return Ok(Some(GotoDefinitionResponse::Array(
+                    rnode
+                        .sources()
+                        .map(|loc| {
+                            Location::new(
+                                Url::from_file_path(loc.file()).unwrap(),
+                                ginko_span_to_range(loc.span()),
+                            )
+                        })
+                        .collect(),
+                )));
+            }
+            Some(ResolvedContext::Property(_)) => Ok(None),
+            None => Ok(None),
         }
     }
 

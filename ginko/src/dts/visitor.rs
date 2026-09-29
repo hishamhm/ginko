@@ -15,6 +15,7 @@ pub enum ReferenceContext<'a> {
 pub enum ItemAtCursor<'a> {
     Property(&'a Property),
     Node(&'a Node),
+    ReferencedNode(&'a ReferencedNode),
     Reference(&'a Reference, ReferenceContext<'a>),
     Label(&'a WithToken<String>),
     Include(&'a Include),
@@ -73,7 +74,13 @@ impl ReferencedNode {
                 ReferenceContext::Root,
             ));
         }
-        self.payload.item_at_cursor(cursor, &ReferenceContext::Root)
+        self.payload
+            .item_at_cursor(cursor, &ReferenceContext::Root)
+            .or(if self.span().contains(cursor) {
+                Some(ItemAtCursor::ReferencedNode(self))
+            } else {
+                None
+            })
     }
 }
 
@@ -86,7 +93,11 @@ impl Node {
         }
         self.payload
             .item_at_cursor(cursor, &ReferenceContext::Node(self))
-            .or(Some(ItemAtCursor::Node(self)))
+            .or(if self.span().contains(cursor) {
+                Some(ItemAtCursor::Node(self))
+            } else {
+                None
+            })
     }
 }
 

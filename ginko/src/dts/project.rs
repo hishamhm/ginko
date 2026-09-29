@@ -4,7 +4,7 @@ use crate::dts::data::HasSource;
 use crate::dts::error_codes::{ErrorCode, SeverityMap};
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::ByteReader;
-use crate::dts::resolved::ResolvedNode;
+use crate::dts::resolved::{ResolvedContext, ResolvedNode};
 use crate::dts::tokens::Lexer;
 use crate::dts::visitor::{ItemAtCursor, ReferenceContext};
 use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Severity, Span};
@@ -424,25 +424,48 @@ impl Project {
         resolved.node_at(path)
     }
 
-    pub fn node_at<'a>(&'a self, path: &Path, position: &Position) -> Option<&'a ResolvedNode> {
+    fn node_at<'a>(
+        &'a self,
+        ctx: &'a AnalysisContext,
+        dts_path: &DtsPath,
+    ) -> Option<&'a ResolvedNode> {
+        match dts_path {
+            DtsPath::Absolute(abs_path) => self.node_at_absolute_path(ctx, abs_path),
+            DtsPath::LabelRelative(lr_path) => {
+                let abs_base = ctx.get_absolute_path_by_label(&lr_path.label)?;
+                let abs_path = abs_base.with_children(lr_path.elements());
+                self.node_at_absolute_path(ctx, &abs_path)
+            }
+            DtsPath::DotRelative(_dr_path) => {
+                // TODO
+                None
+            }
+        }
+    }
+
+    pub fn context_at<'a>(
+        &'a self,
+        path: &Path,
+        position: &Position,
+    ) -> Option<ResolvedContext<'a>> {
         let project_file = self.files.get(path)?;
         let reference = project_file.reference_at(position)?;
 
         let ctx = self.get_analysis(path)?;
 
         match reference {
-            Reference::Label(label) => {
-                self.node_at_absolute_path(ctx, &ctx.get_absolute_path_by_label(&label)?)
+            // FIXME what if a label resolves to a property
+            Reference::Label(label) => self
+                .node_at_absolute_path(ctx, &ctx.get_absolute_path_by_label(&label)?)
+                .map(ResolvedContext::Node),
+            Reference::Path(dts_path) => self.node_at(ctx, &dts_path).map(ResolvedContext::Node),
+            Reference::PropertyPath(ppath) => {
+                self.node_at(ctx, ppath.node_path()).and_then(|rnode| {
+                    rnode
+                        .get_property(ppath.property_name())
+                        .map(ResolvedContext::Property)
+                })
             }
-            Reference::Path(DtsPath::Absolute(abs_path)) => {
-                self.node_at_absolute_path(ctx, &abs_path)
-            }
-            Reference::Path(DtsPath::LabelRelative(lr_path)) => {
-                let abs_base = ctx.get_absolute_path_by_label(&lr_path.label)?;
-                let abs_path = abs_base.with_children(lr_path.elements());
-                self.node_at_absolute_path(ctx, &abs_path)
-            }
-            _ => None,
         }
     }
 
