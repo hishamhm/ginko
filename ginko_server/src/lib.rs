@@ -1,7 +1,7 @@
 use ginko::dts::{
     AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
-    ItemAtCursor, Node, NodeItem, NodePayload, ParserConfig, Primary, Project, Severity,
-    SeverityMap, Span,
+    ItemAtCursor, Node, NodeItem, NodePayload, ParserConfig, Primary, Project, ResolvedNode,
+    Severity, SeverityMap, Span,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -145,7 +145,7 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec!["&".to_string()]),
+                    trigger_characters: Some(vec!["&".to_string(), "/".to_string()]),
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: Some(true),
@@ -292,6 +292,80 @@ impl LanguageServer for Backend {
             ))
         }
 
+        fn completions_for_referenced_node(
+            project: &Project,
+            file_path: &Path,
+            token: &str,
+        ) -> Option<CompletionResponse> {
+            let analysis = project.get_analysis(file_path)?;
+            Some(CompletionResponse::Array(
+                analysis
+                    .get_labels()
+                    .into_iter()
+                    .filter(|label| label.starts_with(token))
+                    .filter_map(|label| {
+                        if let Some(detail) = analysis.get_referred_by_label(&label) {
+                            let snippet = format!("{label} {{\n\t$0\n}};");
+                            Some(CompletionItem {
+                                label,
+                                detail: Some(detail),
+                                kind: Some(CompletionItemKind::MODULE),
+                                insert_text: Some(snippet),
+                                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                                ..Default::default()
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+            ))
+        }
+
+        fn completions_for_node(rnode: &ResolvedNode) -> Option<CompletionResponse> {
+            let mut items = vec![];
+            for name in rnode.active_child_nodes() {
+                let snippet = format!("{name} {{\n\t$0\n}};");
+                items.push(CompletionItem {
+                    label: name,
+                    detail: Some("node".to_string()),
+                    kind: Some(CompletionItemKind::MODULE),
+                    insert_text: Some(snippet),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    ..Default::default()
+                });
+            }
+            for (name, prop) in rnode.active_child_properties() {
+                let snippet = if prop.values.is_empty() {
+                    format!("{name};")
+                } else {
+                    format!("{name} = $0{};", prop.display_values())
+                };
+                items.push(CompletionItem {
+                    label: name,
+                    detail: Some("property".to_string()),
+                    insert_text: Some(snippet),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    ..Default::default()
+                });
+            }
+            Some(CompletionResponse::Array(items))
+        }
+
+        fn completions_for_root() -> Option<CompletionResponse> {
+            let mut items = vec![];
+            let snippet = " {\n\t$0\n};".to_string();
+            items.push(CompletionItem {
+                label: "/".to_string(),
+                detail: Some("node".to_string()),
+                kind: Some(CompletionItemKind::MODULE),
+                insert_text: Some(snippet),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
+                ..Default::default()
+            });
+            Some(CompletionResponse::Array(items))
+        }
+
         let Some(file_path) = self
             .url_to_file_path(&params.text_document_position.text_document.uri)
             .await
@@ -305,8 +379,27 @@ impl LanguageServer for Backend {
             return Ok(None);
         };
 
-        if let Some(token) = token.strip_prefix('&') {
-            return Ok(completions_for_reference(&project, &file_path, token));
+        // Check if cursor is on a "node context" (e.g. inside node brackets),
+        // or not (e.g. at the toplevel).
+        if let Some(rnode) = project.node_at(&file_path, &pos) {
+            if let Some(token) = token.strip_prefix('&') {
+                return Ok(completions_for_reference(&project, &file_path, token));
+            }
+
+            return Ok(completions_for_node(rnode));
+        } else {
+            if let Some(token) = token.strip_prefix('&') {
+                return Ok(completions_for_referenced_node(&project, &file_path, token));
+            }
+
+            if let Some(context) = params.context {
+                if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER
+                    && context.trigger_character == Some("/".to_string())
+                    && params.text_document_position.position.character == 1
+                {
+                    return Ok(completions_for_root());
+                }
+            }
         }
 
         Ok(None)
