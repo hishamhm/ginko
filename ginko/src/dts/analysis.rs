@@ -1,9 +1,9 @@
 use itertools::Itertools;
 
 use crate::dts::ast::{
-    AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node, NodeItem,
-    NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue, Reference,
-    ReferencedNode, WithToken, ABSOLUTE_ROOT,
+    ABSOLUTE_ROOT, AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node,
+    NodeItem, NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue,
+    Reference, ReferencedNode, WithToken,
 };
 use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
@@ -117,6 +117,29 @@ impl AnalysisContext {
         match self.labels.get(label) {
             Some(Labeled::Node(node, _)) => Some(node),
             _ => None,
+        }
+    }
+
+    pub fn get_absolute_path_by_label(&self, label: &str) -> Option<AbsolutePath> {
+        let labeled = self.labels.get(label)?;
+        match labeled {
+            Labeled::Node(_, abs_path) => Some(abs_path.clone()),
+            Labeled::Property(_) => None,
+            Labeled::ReferencedNode(ref_node) => match &*ref_node.reference {
+                Reference::Label(label) => self.get_absolute_path_by_label(label),
+                Reference::Path(path) => match path {
+                    Path::Absolute(abs_path) => Some(abs_path.clone()),
+                    Path::DotRelative(_dr_path) => {
+                        // FIXME: add location context to resolve dot-relative paths
+                        None
+                    }
+                    Path::LabelRelative(lr_path) => {
+                        let base = self.get_absolute_path_by_label(&lr_path.label)?;
+                        Some(base.with_children(lr_path.elements()))
+                    }
+                },
+                Reference::PropertyPath(_) => None,
+            },
         }
     }
 

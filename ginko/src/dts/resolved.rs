@@ -149,4 +149,17 @@ impl ResolvedTree {
             rprop.deleted = true;
         }
     }
+
+    pub(crate) fn node_at<'a>(&'a self, path: &AbsolutePath) -> Option<&'a ResolvedNode> {
+        let mut rnode = &self.root;
+        for element in path.iter() {
+            rnode = match rnode.children.get(element) {
+                Some(child) => child,
+                None => {
+                    return None;
+                }
+            }
+        }
+        Some(rnode)
+    }
 }

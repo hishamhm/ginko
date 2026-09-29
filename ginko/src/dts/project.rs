@@ -1,9 +1,10 @@
 use crate::dts::analysis::{Analysis, AnalysisContext, PendingReferenceList};
-use crate::dts::ast::{DtsFile, Include, Reference};
+use crate::dts::ast::{AbsolutePath, DtsFile, Include, Path as DtsPath, Reference, ABSOLUTE_ROOT};
 use crate::dts::data::HasSource;
 use crate::dts::error_codes::{ErrorCode, SeverityMap};
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::reader::ByteReader;
+use crate::dts::resolved::ResolvedNode;
 use crate::dts::tokens::Lexer;
 use crate::dts::visitor::{ItemAtCursor, ReferenceContext};
 use crate::dts::{Diagnostic, FileType, HasSpan, Parser, ParserConfig, Position, Severity, Span};
@@ -96,6 +97,22 @@ impl ProjectFile {
 
     pub fn source(&self) -> &String {
         &self.source
+    }
+
+    pub fn reference_at(&self, position: &Position) -> Option<Reference> {
+        let file = self.file.as_ref()?;
+        for element in &file.elements {
+            match element {
+                super::Primary::Root(node) if node.span.contains(position) => {
+                    return node.reference_at(&DtsPath::Absolute(ABSOLUTE_ROOT.clone()), position);
+                }
+                super::Primary::ReferencedNode(node) if node.span.contains(position) => {
+                    return node.reference_at(position)
+                }
+                _ => {}
+            }
+        }
+        None
     }
 }
 
@@ -396,6 +413,37 @@ impl Project {
     pub fn find_at_pos<'a>(&'a self, path: &Path, position: &Position) -> Option<ItemAtCursor<'a>> {
         let file = self.get_file(path).and_then(|file| file.file.as_ref())?;
         file.item_at_cursor(position)
+    }
+
+    fn node_at_absolute_path<'a>(
+        &'a self,
+        ctx: &'a AnalysisContext,
+        path: &AbsolutePath,
+    ) -> Option<&'a ResolvedNode> {
+        let resolved = ctx.get_resolved_tree();
+        resolved.node_at(path)
+    }
+
+    pub fn node_at<'a>(&'a self, path: &Path, position: &Position) -> Option<&'a ResolvedNode> {
+        let project_file = self.files.get(path)?;
+        let reference = project_file.reference_at(position)?;
+
+        let ctx = self.get_analysis(path)?;
+
+        match reference {
+            Reference::Label(label) => {
+                self.node_at_absolute_path(ctx, &ctx.get_absolute_path_by_label(&label)?)
+            }
+            Reference::Path(DtsPath::Absolute(abs_path)) => {
+                self.node_at_absolute_path(ctx, &abs_path)
+            }
+            Reference::Path(DtsPath::LabelRelative(lr_path)) => {
+                let abs_base = ctx.get_absolute_path_by_label(&lr_path.label)?;
+                let abs_path = abs_base.with_children(lr_path.elements());
+                self.node_at_absolute_path(ctx, &abs_path)
+            }
+            _ => None,
+        }
     }
 
     pub fn token_at(&self, path: &Path, position: &Position) -> Option<String> {
