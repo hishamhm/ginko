@@ -1017,6 +1017,35 @@ mod test {
     }
 
     #[test]
+    fn error_tolerant_property_parsing() {
+        let code = Code::new("<123 &>");
+        let (ast, diagnostics) = code.parse_ok(Parser::property_value);
+        assert_eq!(
+            ast,
+            PropertyValue::Cells(
+                code.s1("<").token(),
+                vec![
+                    Cell::decimal(WithToken::new(123, code.s1("123").token())),
+                    Cell::Reference(WithToken::new(
+                        Reference::Label("".into()),
+                        code.s1("&").token(),
+                    )),
+                ],
+                code.s1(">").token(),
+            )
+        );
+        assert_eq!(
+            diagnostics,
+            vec![Diagnostic::new(
+                Position::new(0, 5).as_char_span(),
+                code.source(),
+                ErrorCode::ExpectedName,
+                "Expected label"
+            )]
+        )
+    }
+
+    #[test]
     pub fn node_path_reference_properties() {
         let code = Code::new("&my_ref");
         assert_eq!(
@@ -1499,9 +1528,9 @@ mod test {
                         let propval = &prop.values[0];
                         match propval {
                             PropertyValue::Cells(_, cells, _) => {
-                                assert_eq!(&cells[0].to_string(), "1+1");
-                                assert_eq!(&cells[1].to_string(), "2||(3-4)");
-                                assert_eq!(&cells[2].to_string(), "");
+                                assert_eq!(&cells[0].to_string(), "(1+1)");
+                                assert_eq!(&cells[1].to_string(), "(2||(3-4))");
+                                assert_eq!(&cells[2].to_string(), "()");
                             }
                             _ => panic!("expected cells"),
                         }
@@ -1539,15 +1568,15 @@ mod test {
     };
     ",
         );
-        let (res, _) = code.parse(Parser::file);
+        let (_, diag) = code.parse_ok(Parser::file);
 
         assert_eq!(
-            res,
-            Err(Diagnostic::expected(
+            diag,
+            vec![Diagnostic::expected(
                 code.s1("prop_a").end().as_span(),
                 code.source(),
                 &[Semicolon, Equal, OpenBrace, Directive(OmitIfNoRef)],
-            ))
+            )]
         )
     }
 
