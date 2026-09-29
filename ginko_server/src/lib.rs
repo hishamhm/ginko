@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::request::GotoImplementationParams;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer};
 use url::Url;
@@ -154,6 +155,7 @@ impl LanguageServer for Backend {
                 }),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
                     TextDocumentSyncKind::FULL,
@@ -403,6 +405,43 @@ impl LanguageServer for Backend {
         }
 
         Ok(None)
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: GotoImplementationParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let Some(file_path) = self
+            .url_to_file_path(&params.text_document_position_params.text_document.uri)
+            .await
+        else {
+            return Ok(None);
+        };
+        let pos = position_to_ginko_position(params.text_document_position_params.position);
+        let project = self.project.read();
+        let Some(item) = project.find_at_pos(&file_path, &pos) else {
+            return Ok(None);
+        };
+
+        match item {
+            ItemAtCursor::Node(_) => match project.node_at(&file_path, &pos) {
+                Some(rnode) => {
+                    return Ok(Some(GotoDefinitionResponse::Array(
+                        rnode
+                            .sources()
+                            .map(|loc| {
+                                Location::new(
+                                    Url::from_file_path(loc.file()).unwrap(),
+                                    ginko_span_to_range(loc.span()),
+                                )
+                            })
+                            .collect(),
+                    )));
+                }
+                None => Ok(None),
+            },
+            _ => Ok(None),
+        }
     }
 
     async fn goto_definition(
