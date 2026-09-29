@@ -138,6 +138,10 @@ impl AbsolutePath {
         elements.extend_from_slice(children);
         clone
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &NodeName> {
+        self.elements.iter()
+    }
 }
 
 impl Display for AbsolutePath {
