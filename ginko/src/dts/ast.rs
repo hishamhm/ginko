@@ -62,7 +62,7 @@ where
 }
 
 // LRM 2.2.1 – Node Names
-#[derive(Eq, PartialEq, Debug, Hash, Clone)]
+#[derive(Eq, PartialEq, Debug, Hash, Clone, PartialOrd, Ord)]
 pub struct NodeName {
     pub name: String,
     pub unit_address: Option<String>,

@@ -503,20 +503,29 @@ impl LanguageServer for Backend {
         let Some(item) = project.find_at_pos(&file_path, &pos) else {
             return Ok(None);
         };
-        let str = match item {
-            ItemAtCursor::Reference(reference, ctx) => {
-                match project.document_reference(&file_path, reference, &ctx) {
-                    Some(str) => str,
-                    None => return Ok(None),
-                }
+
+        let Some(str) = (match item {
+            ItemAtCursor::Node(node) if node.span().start().line() == pos.line() => {
+                context_based_hover(&project, &file_path, &pos)
             }
-            ItemAtCursor::Label(name) => name.item().clone(),
-            ItemAtCursor::Include(include) => include.file_name.item().clone(),
-            _ => return Ok(None),
+            ItemAtCursor::ReferencedNode(rnode) if rnode.span().start().line() == pos.line() => {
+                context_based_hover(&project, &file_path, &pos)
+            }
+            ItemAtCursor::Reference(reference, ctx) => {
+                project.document_reference(&file_path, reference, &ctx)
+            }
+            ItemAtCursor::Label(name) => Some(name.item().clone()),
+            ItemAtCursor::Include(include) => Some(include.file_name.item().clone()),
+            _ => None,
+        }) else {
+            return Ok(None);
         };
 
         Ok(Some(Hover {
-            contents: HoverContents::Scalar(MarkedString::String(str.to_string())),
+            contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString {
+                language: "dts".to_string(),
+                value: str.to_string(),
+            })),
             range: None,
         }))
     }
@@ -670,4 +679,16 @@ fn position_to_ginko_position(position: Position) -> ginko::dts::Position {
 
 fn ginko_position_to_position(position: ginko::dts::Position) -> Position {
     Position::new(position.line(), position.character())
+}
+
+fn context_based_hover(
+    project: &Project,
+    file_path: &Path,
+    pos: &ginko::dts::Position,
+) -> Option<String> {
+    match project.context_at(file_path, pos) {
+        Some(ResolvedContext::Node(rnode)) => Some(rnode.to_string()),
+        Some(ResolvedContext::Property(_)) => None,
+        None => None,
+    }
 }

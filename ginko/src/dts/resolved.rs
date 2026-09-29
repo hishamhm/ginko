@@ -1,7 +1,8 @@
 use crate::dts::ast::{AbsolutePath, NodeName, Property};
 use crate::dts::{HasSpan, Node, Span};
-use std::collections::HashMap;
-use std::collections::hash_map::Entry::{Occupied, Vacant};
+use std::collections::btree_map::Entry::{Occupied, Vacant};
+use std::collections::BTreeMap;
+use std::fmt::Display;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -43,9 +44,26 @@ pub struct ResolvedProperty {
 #[derive(Default)]
 pub struct ResolvedNode {
     deleted: bool,
-    properties: HashMap<String, ResolvedProperty>,
-    children: HashMap<NodeName, ResolvedNode>,
+    properties: BTreeMap<String, ResolvedProperty>,
+    children: BTreeMap<NodeName, ResolvedNode>,
     sources: Vec<Location>,
+}
+
+impl Display for ResolvedNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{{")?;
+        for (name, rprop) in &self.properties {
+            if !rprop.deleted {
+                writeln!(f, "    {name} = {};", rprop.inner.display_values())?;
+            }
+        }
+        for (name, child_rnode) in &self.children {
+            if !child_rnode.deleted {
+                writeln!(f, "    {name} = {{ ... }};")?;
+            }
+        }
+        writeln!(f, "}}")
+    }
 }
 
 impl ResolvedNode {
