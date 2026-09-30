@@ -544,10 +544,36 @@ where
         ))
     }
 
-    pub fn node_payload(&mut self) -> Result<NodePayload> {
-        let end: Token;
-        self.lexer.expect(TokenKind::OpenBrace)?;
+    fn try_expect(&mut self, prev: &Token, kind: TokenKind) -> Result<Token> {
+        let err = match self.lexer.peek_expect() {
+            Ok(token) => {
+                if token.kind != kind {
+                    Some(Diagnostic::expected(
+                        prev.span(),
+                        self.lexer.source(),
+                        std::slice::from_ref(&kind),
+                    ))
+                } else {
+                    None
+                }
+            }
+            Err(err) => Some(err),
+        };
+        match err {
+            None => self.lexer.expect(kind),
+            Some(err) => Err(err),
+        }
+    }
+
+    pub fn node_payload(&mut self, prev: Token) -> Result<NodePayload> {
         let mut items: Vec<NodeItem> = vec![];
+        let end: Token;
+
+        if let Err(err) = self.try_expect(&prev, TokenKind::OpenBrace) {
+            self.diagnostics.push(err);
+            return Ok(NodePayload { items, end: prev });
+        }
+
         let mut node_discovered = false;
         loop {
             let tok = self.lexer.expect_next()?;
@@ -571,7 +597,7 @@ where
                 };
             let (tok, label) = self.consume_label_if_present(tok)?;
             let ident = match &tok.kind {
-                TokenKind::Ident(string) => WithToken::new(string.clone(), tok),
+                TokenKind::Ident(string) => WithToken::new(string.clone(), tok.clone()),
                 TokenKind::CloseBrace => {
                     end = self.expect_semicolon()?.unwrap_or(tok.clone());
                     break;
@@ -584,6 +610,7 @@ where
                     ));
                 }
             };
+            let prev = tok;
             let tok = self.lexer.peek_expect()?;
             let cloned_tok = tok.clone();
             match &tok.kind {
@@ -592,7 +619,7 @@ where
                     let node_start = ident.span();
                     let node_name: WithToken<NodeName> = From::from(ident);
                     self.check_is_node_name(node_name.span(), &node_name);
-                    let payload = self.node_payload()?;
+                    let payload = self.node_payload(prev)?;
                     let node_end = payload.end.span;
                     items.push(NodeItem::Node(Arc::new(Node {
                         omit_if_no_ref,
@@ -830,7 +857,7 @@ where
                 })))
             }
             TokenKind::Slash => {
-                let root_payload = self.node_payload()?;
+                let root_payload = self.node_payload(token.clone())?;
                 let span = Span::ranging(token.span, root_payload.end.span);
                 let root_name = WithToken::new(NodeName::simple("/"), token);
                 Ok(Primary::Root(Arc::new(Node {
@@ -844,7 +871,7 @@ where
             TokenKind::Ref(reference @ Reference::Simple(_))
             | TokenKind::Ref(reference @ Reference::Path(_)) => {
                 let reference = self.reference(token.clone(), reference);
-                let root_payload = self.node_payload()?;
+                let root_payload = self.node_payload(token.clone())?;
                 let span = Span::ranging(token.span, root_payload.end.span);
                 Ok(Primary::ReferencedNode(Arc::new(ReferencedNode {
                     label,
