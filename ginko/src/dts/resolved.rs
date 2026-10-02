@@ -52,9 +52,9 @@ pub struct ResolvedNode {
 impl Display for ResolvedNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(f, "{{")?;
-        for (name, rprop) in &self.properties {
+        for rprop in self.properties.values() {
             if !rprop.deleted {
-                writeln!(f, "    {name} = {};", rprop.inner.display_values())?;
+                writeln!(f, "    {}", rprop.inner)?;
             }
         }
         for (name, child_rnode) in &self.children {
