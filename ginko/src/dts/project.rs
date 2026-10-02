@@ -121,6 +121,24 @@ pub struct ExternalDiagnostic {
     pub message: String,
 }
 
+pub struct ExternalAnalysisFileReader<'a> {
+    project: &'a Project,
+}
+
+impl ExternalAnalysisFileReader<'_> {
+    pub fn read(&self, path: &Path) -> Option<(&Path, &str)> {
+        let project_file = self.project.files.get(path)?;
+        Some((&project_file.file.as_ref()?.source, &project_file.source))
+    }
+}
+
+pub struct ExternalAnalysisContext<'a> {
+    pub files: ExternalAnalysisFileReader<'a>,
+    pub root_file_path: &'a Path,
+    pub path: &'a Path,
+    pub text: &'a str,
+}
+
 pub struct ExternalAnalysis {
     pub errors: Vec<ExternalDiagnostic>,
     pub warnings: Vec<ExternalDiagnostic>,
@@ -258,11 +276,19 @@ impl Project {
 
     fn do_external_analysis(
         &mut self,
-        file: &Path,
+        path: &Path,
         text: &str,
         loader: &IncludeLoaderGuard,
     ) -> Option<()> {
-        let external_analysis = loader.external_analysis(file, text)?;
+        let (root_file_path, _) = self.analysis_root_for(path)?;
+        let eactx = ExternalAnalysisContext {
+            files: ExternalAnalysisFileReader { project: self },
+            root_file_path: &root_file_path,
+            path,
+            text,
+        };
+
+        let external_analysis = loader.external_analysis(&eactx)?;
 
         let mut diagnostics = vec![];
 
@@ -271,13 +297,13 @@ impl Project {
             (external_analysis.warnings, ErrorCode::CustomWarning),
         ] {
             for e in list {
-                if let Some((span, source)) = self.get_external_analysis_span(file, &e.path) {
+                if let Some((span, source)) = self.get_external_analysis_span(path, &e.path) {
                     diagnostics.push(Diagnostic::new(span, source, kind, e.message));
                 }
             }
         }
 
-        let proj_file = self.files.get_mut(file)?;
+        let proj_file = self.files.get_mut(path)?;
         proj_file.analysis_diagnostics.append(&mut diagnostics);
 
         Some(())
