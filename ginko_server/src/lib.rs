@@ -73,6 +73,14 @@ impl Backend {
         self
     }
 
+    /// Configure the include search paths (the `-i/--include` values passed
+    /// to the binary). Without this, CLI-provided paths never reach the
+    /// project's include loader.
+    pub fn with_include_paths(self, include_paths: Vec<String>) -> Self {
+        self.loader.write().set_include_paths(include_paths);
+        self
+    }
+
     pub fn with_parser_config(self, config: ParserConfig) -> Self {
         self.project.write().set_parser_config(config);
         self
@@ -476,16 +484,29 @@ impl LanguageServer for Backend {
                 match self
                     .loader
                     .write()
-                    .load(&file_path, &include.file_name())
+                    .load(&file_path, &include.file_name(), include.kind())
                     .ok()
                     .and_then(|path| Url::from_file_path(path).ok())
                 {
                     Some(url) => Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
                         url,
-                        ginko_span_to_range(include.span()),
+                        Range::new(Position::new(0, 0), Position::new(0, 0)),
                     )))),
                     _ => Ok(None),
                 }
+            }
+            ItemAtCursor::Macro(token) => {
+                let Some(define) = project
+                    .get_analysis(&file_path)
+                    .and_then(|ctx| ctx.get_define(token.item()))
+                else {
+                    return Ok(None);
+                };
+
+                Ok(Some(GotoDefinitionResponse::Scalar(Location::new(
+                    Url::from_file_path(&define.name.source).unwrap(),
+                    ginko_span_to_range(define.name.span()),
+                ))))
             }
             _ => Ok(None),
         }
@@ -515,7 +536,24 @@ impl LanguageServer for Backend {
                 project.document_reference(&file_path, reference, &ctx)
             }
             ItemAtCursor::Label(name) => Some(name.item().clone()),
-            ItemAtCursor::Include(include) => Some(include.file_name.item().clone()),
+            ItemAtCursor::Include(include) => Some(include.file_name.item().clone().path),
+            ItemAtCursor::Macro(token) => 'block: {
+                let Some(ctx) = project.get_analysis(&file_path) else {
+                    break 'block None;
+                };
+                let Some(define) = ctx.get_define(token.item()) else {
+                    break 'block None;
+                };
+                let base = format!("#define {} {}", token.item(), define.body);
+
+                match ctx.resolve_value(token) {
+                    Some(resolved) if resolved != define.body => {
+                        Some(format!("{}\n{}", base, resolved))
+                    }
+                    Some(_) | None => Some(base),
+                }
+            }
+
             _ => None,
         }) else {
             return Ok(None);

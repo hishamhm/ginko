@@ -6,11 +6,15 @@ use crate::dts::data::{HasSource, Span};
 use crate::dts::diagnostics::{Diagnostic, NameContext};
 use crate::dts::error_codes::ErrorCode;
 use crate::dts::reader::{ByteReader, Reader};
-use crate::dts::tokens::{CompilerDirective, Lexer, PeekingLexer, Reference, Token, TokenKind};
+use crate::dts::tokens::{
+    CompilerDirective, Lexer, PeekingLexer, PreprocessorDirective, Reference, Token, TokenKind,
+};
 use crate::dts::HasSpan;
 use itertools::Itertools;
 use std::path::Path as StdPath;
 use std::sync::Arc;
+
+use super::tokens::IncludeKind;
 
 #[derive(Clone, Default)]
 pub struct ParserConfig {
@@ -248,6 +252,7 @@ where
                     ))
                 }
             }
+            TokenKind::Ident(name) => Ok(Cell::Macro(WithToken::new(name.clone(), tok))),
             _ => Err(Diagnostic::expected(
                 tok.span(),
                 tok.source(),
@@ -255,6 +260,7 @@ where
                     TokenKind::UnparsedNumber("".to_string()),
                     TokenKind::Ref(Reference::Simple("".to_string())),
                     TokenKind::OpenParen,
+                    TokenKind::Ident("macro".to_string()),
                 ],
             )),
         }
@@ -452,13 +458,13 @@ where
             }
             TokenKind::Directive(CompilerDirective::Incbin) => {
                 let open_paren = self.expect_next_token(TokenKind::OpenParen)?;
-                let path = self.lexer.expect_next()?;
-                let string = if let TokenKind::String(string) = &path.kind {
+                let path_token = self.lexer.expect_next()?;
+                let string = if let TokenKind::String(string) = &path_token.kind {
                     string.clone()
                 } else {
                     return Err(Diagnostic::expected(
-                        path.span(),
-                        path.source(),
+                        path_token.span(),
+                        path_token.source(),
                         &[TokenKind::String("".to_string())],
                     ));
                 };
@@ -468,7 +474,13 @@ where
                     open_paren,
                     Include {
                         include_token: tok,
-                        file_name: WithToken::new(string, path),
+                        file_name: WithToken::new(
+                            super::tokens::IncludeName {
+                                path: string,
+                                kind: IncludeKind::Dts,
+                            },
+                            path_token,
+                        ),
                     },
                     close_paren,
                 ))
@@ -577,6 +589,10 @@ where
         let mut node_discovered = false;
         loop {
             let tok = self.lexer.expect_next()?;
+            if matches!(&tok.kind, TokenKind::Ident(w) if Self::is_cpp_directive(w)) {
+                self.skip_cpp_directive_line(&tok)?;
+                continue;
+            }
             if tok.kind == TokenKind::Directive(CompilerDirective::DeleteNode) {
                 let node_name = self.node_name()?;
                 self.expect_semicolon()?;
@@ -724,12 +740,14 @@ where
             | TokenKind::UnparsedNumber(_)
             | TokenKind::UnparsedExpression(_)
             | TokenKind::Directive(_)
+            | TokenKind::PreprocessorDirective(_)
             | TokenKind::Ref(_)
             | TokenKind::CloseBracket
             | TokenKind::ChevronRight
             | TokenKind::CloseBrace
             | TokenKind::Equal
             | TokenKind::CloseParen
+            | TokenKind::IncludeName(_)
             | TokenKind::ChevronLeft => false,
             TokenKind::Unknown(_) | TokenKind::Comment(_) => true,
         };
@@ -751,6 +769,11 @@ where
     pub fn file(&mut self) -> Result<DtsFile> {
         let mut elements: Vec<Primary> = vec![];
         while self.lexer.peek().is_some() {
+            if self.peek_is_cpp_directive() {
+                let token = self.lexer.expect_next()?;
+                self.skip_cpp_directive_line(&token)?;
+                continue;
+            }
             elements.push(self.primary()?);
         }
         Ok(DtsFile {
@@ -818,23 +841,12 @@ where
                     Memreserve::new(address, length),
                 )))
             }
-            TokenKind::Ident(str) if str == "#include" => {
-                let tok = self.lexer.expect_next()?;
-                match tok.kind {
-                    TokenKind::String(include_str) => Ok(Primary::CStyleInclude(include_str)),
-                    _ => Err(Diagnostic::expected(
-                        tok.span(),
-                        tok.source(),
-                        &[TokenKind::String("".to_string())],
-                    )),
-                }
-            }
-            TokenKind::Directive(CompilerDirective::Include) => {
+            TokenKind::PreprocessorDirective(PreprocessorDirective::Include)
+            | TokenKind::Directive(CompilerDirective::Include) => {
                 let include_token = token;
                 let string_tok = self.lexer.expect_next()?;
-                // let tok_span = string_tok.span();
-                let path = match string_tok.kind.clone() {
-                    TokenKind::String(string) => string,
+                let include = match string_tok.kind.clone() {
+                    TokenKind::IncludeName(include) => include,
                     _ => {
                         return Err(Diagnostic::expected(
                             string_tok.span(),
@@ -849,11 +861,11 @@ where
                         tok,
                         ErrorCode::ParserError,
                         "Include directive must not end with a semicolon",
-                    ))
+                    ));
                 }
                 Ok(Primary::Directive(AnyDirective::Include(Include {
                     include_token,
-                    file_name: WithToken::new(path, string_tok.clone()),
+                    file_name: WithToken::new(include, string_tok.clone()),
                 })))
             }
             TokenKind::Slash => {
@@ -915,10 +927,47 @@ where
             )),
         }
     }
+
+    fn peek_is_cpp_directive(&mut self) -> bool {
+        self.lexer.peek().is_some_and(
+            |tok| matches!(&tok.kind, TokenKind::Ident(w) if Self::is_cpp_directive(w)),
+        )
+    }
+    fn is_cpp_directive(word: &str) -> bool {
+        matches!(
+            word,
+            "#define"
+                | "#ifdef"
+                | "#ifndef"
+                | "#if"
+                | "#else"
+                | "#elif"
+                | "#endif"
+                | "#undef"
+                | "#line"
+                | "#error"
+                | "#warning"
+                | "#pragma"
+        )
+    }
+
+    // skip rest of a line that contained a C directive
+    fn skip_cpp_directive_line(&mut self, start: &Token) -> Result<()> {
+        let line = start.span.start().line();
+        while let Some(tok) = self.lexer.peek() {
+            if tok.span.start().line() != line {
+                break;
+            }
+            self.lexer.expect_next()?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod test {
+    use itertools::Itertools;
+
     use crate::dts::ast::{
         Cell, DtsFile, Include, Memreserve, Node, NodeItem, NodeName, NodePayload, Path, Property,
         PropertyPath, PropertyValue, Reference, WithToken,
@@ -929,7 +978,8 @@ mod test {
     use crate::dts::parser::Parser;
     use crate::dts::test::Code;
     use crate::dts::tokens::CompilerDirective::OmitIfNoRef;
-    use crate::dts::tokens::TokenKind::{Directive, Equal, OpenBrace, Semicolon};
+    use crate::dts::tokens::TokenKind::{self, Directive, Equal, OpenBrace, Semicolon};
+    use crate::dts::tokens::{IncludeKind, IncludeName, PreprocessorDirective};
     use crate::dts::{AnyDirective, HasSpan, Position, Primary, Span};
     use std::sync::Arc;
     use std::vec;
@@ -1036,6 +1086,25 @@ mod test {
                     Cell::Reference(WithToken::new(
                         Reference::Label("label".into()),
                         code.s1("&label").token(),
+                    )),
+                ],
+                code.s1(">").token(),
+            )
+        );
+        let code = Code::new("<GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>");
+        assert_eq!(
+            code.parse_ok_no_diagnostics(Parser::property_value),
+            PropertyValue::Cells(
+                code.s1("<").token(),
+                vec![
+                    Cell::Macro(WithToken::new(
+                        "GIC_SPI".to_string(),
+                        code.s1("GIC_SPI").token()
+                    )),
+                    Cell::decimal(WithToken::new(94, code.s1("94").token())),
+                    Cell::Macro(WithToken::new(
+                        "IRQ_TYPE_LEVEL_HIGH".to_string(),
+                        code.s1("IRQ_TYPE_LEVEL_HIGH").token()
                     )),
                 ],
                 code.s1(">").token(),
@@ -1248,7 +1317,13 @@ mod test {
                 code.s1("(").token(),
                 Include {
                     include_token: code.s1("/").token(),
-                    file_name: WithToken::new("file".into(), code.s1("\"").token(),)
+                    file_name: WithToken::new(
+                        IncludeName {
+                            path: "file".to_string(),
+                            kind: IncludeKind::Dts
+                        },
+                        code.s1("\"").token(),
+                    )
                 },
                 code.s1(")").token()
             )
@@ -1571,16 +1646,37 @@ mod test {
 
     #[test]
     fn c_style_includes() {
-        // Should simply parse; we ignore c-style includes for now
-        let _ = Code::new(
+        let code = Code::new(
             "\
     /dts-v1/;
     #include \"some_header\"
+    #include <some_header2>
 
     / {};
     ",
         )
         .parse_ok_no_diagnostics(Parser::file);
+        let includes = code
+            .elements
+            .iter()
+            .filter_map(|f| match f {
+                Primary::Directive(AnyDirective::Include(incl)) => Some(incl),
+                _ => None,
+            })
+            .collect_vec();
+        assert_eq!(
+            includes[0].include_token.kind,
+            TokenKind::PreprocessorDirective(PreprocessorDirective::Include)
+        );
+        assert_eq!(includes[0].file_name.kind, IncludeKind::CQuoted);
+        assert_eq!(includes[0].file_name.path, "some_header");
+
+        assert_eq!(
+            includes[1].include_token.kind,
+            TokenKind::PreprocessorDirective(PreprocessorDirective::Include)
+        );
+        assert_eq!(includes[1].file_name.kind, IncludeKind::CAngled);
+        assert_eq!(includes[1].file_name.path, "some_header2");
     }
 
     #[test]
@@ -1806,5 +1902,34 @@ ${/not/allowed} {
                 "$-references are not allowed at the top level",
             )
         );
+    }
+
+    #[test]
+    pub fn include_parsing() {
+        let code = Code::new(
+            "\
+/dts-v1/
+
+/ {
+    some_prop = <5>
+}",
+        );
+        let (_, diagnostics) = code.parse_ok(Parser::file);
+        assert_eq!(
+            diagnostics,
+            vec![
+                Diagnostic::expected(
+                    Position::new(0, 8).as_char_span(),
+                    code.source(),
+                    &[Semicolon],
+                ),
+                Diagnostic::expected(
+                    Position::new(3, 19).as_char_span(),
+                    code.source(),
+                    &[Semicolon],
+                ),
+                Diagnostic::expected(Position::new(4, 1).as_span(), code.source(), &[Semicolon],),
+            ]
+        )
     }
 }

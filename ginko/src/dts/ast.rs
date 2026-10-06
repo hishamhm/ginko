@@ -1,6 +1,6 @@
 use crate::dts::data::HasSource;
-use crate::dts::tokens::Token;
-use crate::dts::{HasSpan, Position, Span};
+use crate::dts::tokens::{IncludeKind, IncludeName, Token};
+use crate::dts::{FileType, HasSpan, Position, Span};
 use itertools::Itertools;
 use std::fmt::{Display, Formatter, LowerHex, Write};
 use std::ops::Deref;
@@ -394,6 +394,7 @@ pub enum Cell {
     Number(WithToken<u32>, NumberRepr),
     Reference(WithToken<Reference>),
     Expression(WithToken<String>),
+    Macro(WithToken<String>),
 }
 
 impl Cell {
@@ -413,6 +414,7 @@ impl Display for Cell {
             Cell::Number(num, NumberRepr::Decimal) => write!(f, "{num}"),
             Cell::Reference(reference) => write!(f, "{reference}"),
             Cell::Expression(exp) => write!(f, "({exp})"),
+            Cell::Macro(name) => write!(f, "{name}"),
         }
     }
 }
@@ -701,7 +703,7 @@ impl Display for DtsFile {
 #[derive(Eq, PartialEq, Debug, Clone)]
 pub struct Include {
     pub include_token: Token,
-    pub file_name: WithToken<String>,
+    pub file_name: WithToken<IncludeName>,
 }
 
 impl HasSpan for Include {
@@ -718,13 +720,33 @@ impl HasSource for Include {
 
 impl Display for Include {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "/include/ \"{}\"", self.file_name)
+        write!(
+            f,
+            "{} {}",
+            self.include_token.kind.stringify(),
+            self.file_name
+        )
     }
 }
 
 impl Include {
     pub fn file_name(&self) -> String {
-        self.file_name.to_string()
+        self.file_name.path.to_string()
+    }
+
+    pub fn kind(&self) -> IncludeKind {
+        self.file_name.kind
+    }
+
+    pub fn follow_as_dts(&self, resolved: &std::path::Path) -> bool {
+        match self.kind() {
+            IncludeKind::Dts => true,
+            IncludeKind::CAngled => false,
+            IncludeKind::CQuoted => matches!(
+                FileType::from(resolved),
+                FileType::DtSource | FileType::DtSourceInclude | FileType::DtSourceOverlay
+            ),
+        }
     }
 }
 
@@ -792,8 +814,6 @@ pub enum Primary {
     Directive(AnyDirective),
     Root(Arc<Node>),
     ReferencedNode(Arc<ReferencedNode>),
-    // C-style includes should be put into a separate pass
-    CStyleInclude(String),
 }
 
 impl Primary {
@@ -811,7 +831,6 @@ impl Display for Primary {
             Primary::Directive(directive) => write!(f, "{directive}"),
             Primary::Root(node) => write!(f, "{node}"),
             Primary::ReferencedNode(node) => write!(f, "{node}"),
-            Primary::CStyleInclude(include) => write!(f, "#include {include}"),
         }
     }
 }

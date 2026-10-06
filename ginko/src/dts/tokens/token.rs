@@ -40,9 +40,46 @@ pub enum TokenKind {
     UnparsedNumber(String),
     UnparsedExpression(String),
     Directive(CompilerDirective),
+    PreprocessorDirective(PreprocessorDirective),
+    IncludeName(IncludeName),
     Ref(Reference),
     Comment(String),
     Unknown(u8),
+}
+
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub struct IncludeName {
+    pub path: String,
+    pub kind: IncludeKind,
+}
+
+impl Display for IncludeName {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            IncludeKind::CAngled => write!(f, "<{}>", self.path),
+            _ => write!(f, "\"{}\"", self.path),
+        }
+    }
+}
+
+#[derive(Eq, PartialEq, Debug, Clone, Copy)]
+pub enum IncludeKind {
+    Dts,
+    CQuoted,
+    CAngled,
+}
+
+#[derive(Eq, PartialEq, Debug, Clone)]
+pub enum PreprocessorDirective {
+    Include,
+}
+
+impl Display for PreprocessorDirective {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PreprocessorDirective::Include => write!(f, "#include"),
+        }
+    }
 }
 
 impl TokenKind {
@@ -66,6 +103,7 @@ impl TokenKind {
             TokenKind::UnparsedNumber(str) => str.clone(),
             TokenKind::UnparsedExpression(str) => str.clone(),
             TokenKind::Directive(compiler_directive) => format!("{}", compiler_directive),
+            TokenKind::PreprocessorDirective(directive) => format!("{}", directive),
             TokenKind::Ref(reference) => match reference {
                 Reference::Simple(simple) => format!("&{simple}"),
                 Reference::Path(path) => format!("&{{{path}}}"),
@@ -73,6 +111,7 @@ impl TokenKind {
             },
             TokenKind::Comment(comment) => format!("// {comment}\n"),
             TokenKind::Unknown(u) => format!("{}", *u as char),
+            TokenKind::IncludeName(include_name) => format!("{}", include_name),
         }
     }
 }
