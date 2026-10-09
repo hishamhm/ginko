@@ -427,6 +427,18 @@ pub enum PropertyValue {
     Incbin(Token, Include, Token),
 }
 
+impl PropertyValue {
+    pub fn end_token(&self) -> &Token {
+        match self {
+            PropertyValue::String(s) => &s.token,
+            PropertyValue::Cells(_, _, t) => &t,
+            PropertyValue::Reference(r) => &r.token,
+            PropertyValue::ByteStrings(_, _, t) => &t,
+            PropertyValue::Incbin(_, _, t) => &t,
+        }
+    }
+}
+
 impl HasSpan for PropertyValue {
     fn span(&self) -> Span {
         match self {

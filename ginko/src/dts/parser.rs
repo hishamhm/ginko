@@ -633,7 +633,13 @@ where
                     self.skip_tok();
                     self.check_is_property_name(ident.span(), &ident);
                     let values = self.property_values()?;
-                    let end_tok = self.expect_semicolon()?.unwrap_or(cloned_tok);
+                    let end_tok = self.expect_semicolon()?.unwrap_or(
+                        values
+                            .last()
+                            .map(|t| t.end_token())
+                            .cloned()
+                            .unwrap_or(cloned_tok),
+                    );
                     if let Some(omit_if_no_ref) = omit_if_no_ref {
                         self.diagnostics.push(Diagnostic::new(
                             omit_if_no_ref.span,
