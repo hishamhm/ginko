@@ -473,20 +473,11 @@ where
                     close_paren,
                 ))
             }
-            _ => {
-                self.diagnostics.push(Diagnostic::expected(
-                    tok.span(),
-                    tok.source(),
-                    &[
-                        TokenKind::String("".to_string()),
-                        TokenKind::ChevronLeft,
-                        TokenKind::Ref(Reference::Simple("".to_string())),
-                        TokenKind::OpenBracket,
-                        TokenKind::Directive(CompilerDirective::Incbin),
-                    ],
-                ));
-                Ok(PropertyValue::Cells(tok.clone(), vec![], tok))
-            }
+            _ => Err(Diagnostic::expected(
+                tok.span(),
+                tok.source(),
+                &Self::expected_property_value_kinds(),
+            )),
         }
     }
 
@@ -502,10 +493,51 @@ where
         }
     }
 
+    fn expected_property_value_kinds() -> Vec<TokenKind> {
+        vec![
+            TokenKind::String("".to_string()),
+            TokenKind::ChevronLeft,
+            TokenKind::Ref(Reference::Simple("".to_string())),
+            TokenKind::OpenBracket,
+            TokenKind::Directive(CompilerDirective::Incbin),
+        ]
+    }
+
     pub fn property_values(&mut self) -> Result<Vec<PropertyValue>> {
         let mut values: Vec<PropertyValue> = vec![];
         loop {
             self.skip_optional_label();
+            // If the next token cannot begin a property value (as is the
+            // case for an incomplete property such as `prop =`), report the
+            // missing value but leave the token in the stream, so that the
+            // parsing of the enclosing node can still complete.
+            match self.lexer.peek_kind() {
+                Some(
+                    TokenKind::String(_)
+                    | TokenKind::ChevronLeft
+                    | TokenKind::Ref(_)
+                    | TokenKind::OpenBracket
+                    | TokenKind::Directive(CompilerDirective::Bits)
+                    | TokenKind::Directive(CompilerDirective::Incbin),
+                ) => {}
+                Some(_) => {
+                    let tok = self.lexer.peek_expect()?;
+                    self.diagnostics.push(Diagnostic::expected(
+                        tok.span(),
+                        tok.source(),
+                        &Self::expected_property_value_kinds(),
+                    ));
+                    break;
+                }
+                None => {
+                    self.diagnostics.push(Diagnostic::expected(
+                        self.lexer.last_pos().as_span(),
+                        self.lexer.source(),
+                        &Self::expected_property_value_kinds(),
+                    ));
+                    break;
+                }
+            }
             values.push(self.property_value()?);
             self.skip_optional_label();
             if self.lexer.peek_expect()?.kind == TokenKind::Comma {
@@ -633,13 +665,33 @@ where
                     self.skip_tok();
                     self.check_is_property_name(ident.span(), &ident);
                     let values = self.property_values()?;
-                    let end_tok = self.expect_semicolon()?.unwrap_or(
-                        values
-                            .last()
-                            .map(|t| t.end_token())
-                            .cloned()
-                            .unwrap_or(cloned_tok),
-                    );
+                    let end_tok = match self.expect_semicolon()? {
+                        Some(tok) => tok,
+                        None => {
+                            // The property is incomplete (e.g. `prop =` with
+                            // no value) or its terminating `;` is missing.
+                            // Extend the span of the property past the `=`
+                            // (or the last value, if any) to include the
+                            // whitespace up to the following token. This
+                            // makes it possible for LSP operations to
+                            // recognize a cursor on the line of the property
+                            // as being within the property.
+                            let next_start = match self.lexer.peek() {
+                                Some(tok) => tok.span.start(),
+                                None => self.lexer.last_pos(),
+                            };
+                            let end = values
+                                .last()
+                                .map(|value| value.end_token().span.end())
+                                .unwrap_or(cloned_tok.span.end())
+                                .max(next_start);
+                            Token {
+                                kind: cloned_tok.kind,
+                                source: cloned_tok.source,
+                                span: Span::new(cloned_tok.span.start(), end),
+                            }
+                        }
+                    };
                     if let Some(omit_if_no_ref) = omit_if_no_ref {
                         self.diagnostics.push(Diagnostic::new(
                             omit_if_no_ref.span,
@@ -1788,6 +1840,107 @@ mod test {
                 ]
             }
         );
+    }
+
+    use crate::dts::tokens::{CompilerDirective, TokenKind};
+
+    #[test]
+    pub fn incomplete_property_span_includes_trailing_whitespace() {
+        let code = Code::new("/dts-v1/;\n\n/ {\n    node {\n        prop =   \n    };\n};");
+        let (file, diagnostics) = code.parse_ok(Parser::file);
+        // Parsing completes and the incomplete property is still reported.
+        assert_eq!(
+            diagnostics,
+            vec![
+                Diagnostic::expected(
+                    code.s1("}").span(),
+                    code.source(),
+                    &[
+                        TokenKind::String("".to_string()),
+                        TokenKind::ChevronLeft,
+                        TokenKind::Ref(crate::dts::tokens::Reference::Simple("".to_string())),
+                        TokenKind::OpenBracket,
+                        TokenKind::Directive(CompilerDirective::Incbin),
+                    ],
+                ),
+                Diagnostic::expected(
+                    Position::new(4, 14).as_char_span(),
+                    code.source(),
+                    &[Semicolon],
+                ),
+            ]
+        );
+        let root = file
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                Primary::Root(root) => Some(root),
+                _ => None,
+            })
+            .expect("Expected a root node");
+        let node = match &root.payload.items[0] {
+            NodeItem::Node(node) => node,
+            _ => panic!("Expected a nested node"),
+        };
+        let property = match &node.payload.items[0] {
+            NodeItem::Property(property) => property,
+            _ => panic!("Expected a property"),
+        };
+        assert_eq!(property.name.item(), "prop");
+        // The span of the property starts at the property name...
+        assert_eq!(property.start(), code.s1("prop").position());
+        // ...and extends past the `=`, including the trailing whitespace on
+        // the line, up to the closing brace of the node.
+        assert_eq!(property.end(), code.s1("}").position());
+        // A cursor anywhere in the whitespace after the `=` is within the
+        // span of the property.
+        for col in 14..=16 {
+            let pos = Position::new(4, col);
+            assert!(
+                property.span().contains(&pos),
+                "position {pos} should be within the span of the property"
+            );
+        }
+    }
+
+    #[test]
+    pub fn property_without_semicolon_span_extends_to_next_token() {
+        let code = Code::new(
+            "/dts-v1/;\n\n/ {\n    some_prop = <5>  \n    other_prop = <1>;\n};",
+        );
+        let (file, diagnostics) = code.parse_ok(Parser::file);
+        assert_eq!(
+            diagnostics,
+            vec![Diagnostic::expected(
+                Position::new(3, 19).as_char_span(),
+                code.source(),
+                &[Semicolon],
+            )]
+        );
+        let root = file
+            .elements
+            .iter()
+            .find_map(|element| match element {
+                Primary::Root(root) => Some(root),
+                _ => None,
+            })
+            .expect("Expected a root node");
+        let first = match &root.payload.items[0] {
+            NodeItem::Property(property) => property,
+            _ => panic!("Expected a property"),
+        };
+        let second = match &root.payload.items[1] {
+            NodeItem::Property(property) => property,
+            _ => panic!("Expected a property"),
+        };
+        // The incomplete property's span extends past its value, including
+        // the trailing whitespace, up to the start of the next token.
+        assert_eq!(first.start(), code.s1("some_prop").position());
+        assert_eq!(first.end(), code.s1("other_prop").position());
+        assert!(first.span().contains(&Position::new(3, 19)));
+        assert!(first.span().contains(&Position::new(3, 20)));
+        // The following property is unaffected.
+        assert_eq!(second.end(), code.s(";", 2).span().end());
     }
 
     #[test]

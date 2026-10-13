@@ -431,10 +431,10 @@ impl PropertyValue {
     pub fn end_token(&self) -> &Token {
         match self {
             PropertyValue::String(s) => &s.token,
-            PropertyValue::Cells(_, _, t) => &t,
+            PropertyValue::Cells(_, _, t) => t,
             PropertyValue::Reference(r) => &r.token,
-            PropertyValue::ByteStrings(_, _, t) => &t,
-            PropertyValue::Incbin(_, _, t) => &t,
+            PropertyValue::ByteStrings(_, _, t) => t,
+            PropertyValue::Incbin(_, _, t) => t,
         }
     }
 }
@@ -831,6 +831,59 @@ impl Display for Primary {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::dts::tokens::TokenKind;
+
+    #[test]
+    fn property_value_end_token() {
+        fn token(start: u32, end: u32) -> Token {
+            Token {
+                kind: TokenKind::Semicolon,
+                span: Span::new(Position::new(0, start), Position::new(0, end)),
+                source: Arc::from(StdPath::new("test.dts")),
+            }
+        }
+        let first = token(0, 1);
+        let second = token(2, 3);
+        let third = token(4, 5);
+
+        assert_eq!(
+            PropertyValue::String(WithToken::new("value".into(), first.clone())).end_token(),
+            &first
+        );
+        assert_eq!(
+            PropertyValue::Cells(first.clone(), vec![], second.clone()).end_token(),
+            &second
+        );
+        assert_eq!(
+            PropertyValue::Reference(WithToken::new(
+                Reference::Label("label".into()),
+                first.clone()
+            ))
+            .end_token(),
+            &first
+        );
+        assert_eq!(
+            PropertyValue::ByteStrings(
+                first.clone(),
+                vec![WithToken::new(vec![1, 2], second.clone())],
+                third.clone()
+            )
+            .end_token(),
+            &third
+        );
+        assert_eq!(
+            PropertyValue::Incbin(
+                first.clone(),
+                Include {
+                    include_token: second.clone(),
+                    file_name: WithToken::new("file".into(), second),
+                },
+                third.clone()
+            )
+            .end_token(),
+            &third
+        );
+    }
 
     #[test]
     fn display_node_name() {
