@@ -1,5 +1,7 @@
 use crate::dts::analysis::{Analysis, AnalysisContext, PendingReferenceList};
-use crate::dts::ast::{ABSOLUTE_ROOT, AbsolutePath, DtsFile, Include, Path as DtsPath, Reference};
+use crate::dts::ast::{
+    ABSOLUTE_ROOT, AbsolutePath, DtsFile, Include, Path as DtsPath, PropertyPath, Reference,
+};
 use crate::dts::data::HasSource;
 use crate::dts::error_codes::{ErrorCode, SeverityMap};
 use crate::dts::loader::IncludeLoaderGuard;
@@ -463,16 +465,16 @@ impl Project {
         &'a self,
         ctx: &'a AnalysisContext,
         path: &AbsolutePath,
-    ) -> Option<&'a ResolvedNode> {
+    ) -> Option<(&'a ResolvedNode, AbsolutePath)> {
         let resolved = ctx.get_resolved_tree();
-        resolved.node_at(path)
+        resolved.node_at(path).map(|node| (node, path.clone()))
     }
 
     fn node_at<'a>(
         &'a self,
         ctx: &'a AnalysisContext,
         dts_path: &DtsPath,
-    ) -> Option<&'a ResolvedNode> {
+    ) -> Option<(&'a ResolvedNode, AbsolutePath)> {
         match dts_path {
             DtsPath::Absolute(abs_path) => self.node_at_absolute_path(ctx, abs_path),
             DtsPath::LabelRelative(lr_path) => {
@@ -499,16 +501,29 @@ impl Project {
 
         match reference {
             // FIXME what if a label resolves to a property
-            Reference::Label(label) => self
-                .node_at_absolute_path(ctx, &ctx.get_absolute_path_by_label(&label)?)
-                .map(ResolvedContext::Node),
-            Reference::Path(dts_path) => self.node_at(ctx, &dts_path).map(ResolvedContext::Node),
+            Reference::Label(label) => {
+                let path = ctx.get_absolute_path_by_label(&label)?;
+                self.node_at_absolute_path(ctx, &path)
+                    .map(|(node, abs_path)| {
+                        ResolvedContext::Node(node, DtsPath::Absolute(abs_path))
+                    })
+            }
+            Reference::Path(dts_path) => self
+                .node_at(ctx, &dts_path)
+                .map(|(node, abs_path)| ResolvedContext::Node(node, DtsPath::Absolute(abs_path))),
             Reference::PropertyPath(ppath) => {
-                self.node_at(ctx, ppath.node_path()).and_then(|rnode| {
-                    rnode
-                        .get_property(ppath.property_name())
-                        .map(ResolvedContext::Property)
-                })
+                self.node_at(ctx, ppath.node_path())
+                    .and_then(|(rnode, abs_path)| {
+                        rnode.get_property(ppath.property_name()).map(|prop| {
+                            ResolvedContext::Property(
+                                prop,
+                                PropertyPath::new(
+                                    DtsPath::Absolute(abs_path),
+                                    ppath.property_name().to_string(),
+                                ),
+                            )
+                        })
+                    })
             }
         }
     }

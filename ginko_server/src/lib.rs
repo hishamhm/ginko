@@ -384,14 +384,14 @@ impl LanguageServer for Backend {
         // Check if cursor is on a "node context" (e.g. inside node brackets),
         // or not (e.g. at the toplevel).
         match project.context_at(&file_path, &pos) {
-            Some(ResolvedContext::Node(rnode)) => {
+            Some(ResolvedContext::Node(rnode, _)) => {
                 if let Some(token) = token.strip_prefix('&') {
                     return Ok(completions_for_reference(&project, &file_path, token));
                 }
 
                 return Ok(completions_for_node(rnode));
             }
-            Some(ResolvedContext::Property(_)) => {
+            Some(ResolvedContext::Property(_, _)) => {
                 if let Some(token) = token.strip_prefix('&') {
                     return Ok(completions_for_reference(&project, &file_path, token));
                 }
@@ -429,7 +429,7 @@ impl LanguageServer for Backend {
         let project = self.project.read();
 
         match project.context_at(&file_path, &pos) {
-            Some(ResolvedContext::Node(rnode)) => {
+            Some(ResolvedContext::Node(rnode, _)) => {
                 return Ok(Some(GotoDefinitionResponse::Array(
                     rnode
                         .sources()
@@ -442,7 +442,7 @@ impl LanguageServer for Backend {
                         .collect(),
                 )));
             }
-            Some(ResolvedContext::Property(_)) => Ok(None),
+            Some(ResolvedContext::Property(_, _)) => Ok(None),
             None => Ok(None),
         }
     }
@@ -687,8 +687,8 @@ fn context_based_hover(
     pos: &ginko::dts::Position,
 ) -> Option<String> {
     match project.context_at(file_path, pos) {
-        Some(ResolvedContext::Node(rnode)) => Some(rnode.to_string()),
-        Some(ResolvedContext::Property(_)) => None,
+        Some(ResolvedContext::Node(rnode, _)) => Some(rnode.to_string()),
+        Some(ResolvedContext::Property(_, _)) => None,
         None => None,
     }
 }

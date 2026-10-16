@@ -1,4 +1,4 @@
-use crate::dts::ast::{AbsolutePath, NodeName, Property};
+use crate::dts::ast::{self, AbsolutePath, NodeName, Property};
 use crate::dts::{HasSpan, Node, Span};
 use std::collections::btree_map::Entry::{Occupied, Vacant};
 use std::collections::BTreeMap;
@@ -31,8 +31,8 @@ impl Location {
 }
 
 pub enum ResolvedContext<'a> {
-    Node(&'a ResolvedNode),
-    Property(&'a ResolvedProperty),
+    Node(&'a ResolvedNode, ast::Path),
+    Property(&'a ResolvedProperty, ast::PropertyPath),
 }
 
 pub struct ResolvedProperty {
