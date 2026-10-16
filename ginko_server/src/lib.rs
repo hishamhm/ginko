@@ -271,27 +271,39 @@ impl LanguageServer for Backend {
     async fn did_close(&self, _: DidCloseTextDocumentParams) {}
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        fn completions_for_labels(
+            labels: Vec<(String, Option<String>)>,
+            token: &str,
+        ) -> Option<CompletionResponse> {
+            Some(CompletionResponse::Array(
+                labels
+                    .into_iter()
+                    .filter(|(label, _)| label.starts_with(token))
+                    .map(|(label, detail)| CompletionItem {
+                        label,
+                        detail,
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+        }
+
         fn completions_for_reference(
             project: &Project,
             file_path: &Path,
             token: &str,
         ) -> Option<CompletionResponse> {
             let analysis = project.get_analysis(file_path)?;
-            Some(CompletionResponse::Array(
-                analysis
-                    .get_labels()
-                    .into_iter()
-                    .filter(|label| label.starts_with(token))
-                    .map(|label| {
-                        let detail = analysis.get_referred_by_label(&label);
-                        CompletionItem {
-                            label,
-                            detail,
-                            ..Default::default()
-                        }
-                    })
-                    .collect(),
-            ))
+            let labels = analysis
+                .get_labels()
+                .into_iter()
+                .filter(|label| label.starts_with(token))
+                .map(|label| {
+                    let detail = analysis.get_referred_by_label(&label);
+                    (label, detail)
+                })
+                .collect();
+            completions_for_labels(labels, token)
         }
 
         fn completions_for_referenced_node(
@@ -391,8 +403,12 @@ impl LanguageServer for Backend {
 
                 return Ok(completions_for_node(rnode));
             }
-            Some(ResolvedContext::Property(_, _)) => {
+            Some(ResolvedContext::Property(_, ppath)) => {
                 if let Some(token) = token.strip_prefix('&') {
+                    if let Some(labels) = project.valid_references_for_property(&file_path, &ppath)
+                    {
+                        return Ok(completions_for_labels(labels, token));
+                    }
                     return Ok(completions_for_reference(&project, &file_path, token));
                 }
             }

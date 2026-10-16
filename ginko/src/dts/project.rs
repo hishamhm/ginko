@@ -439,6 +439,20 @@ impl Project {
         }
     }
 
+    pub fn valid_references_for_property(
+        &self,
+        file_path: &Path,
+        ppath: &PropertyPath,
+    ) -> Option<Vec<(String, Option<String>)>> {
+        let (root_file_path, _) = self.analysis_root_for(file_path)?;
+        let proj_file = self.files.get(&root_file_path)?;
+        if let Some(external_analysis) = &proj_file.external_analysis {
+            return external_analysis.valid_references_for_property(&ppath.to_string());
+        }
+
+        None
+    }
+
     #[cfg(test)]
     pub fn assert_no_diagnostics(&self) {
         use itertools::Itertools;
