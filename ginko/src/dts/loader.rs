@@ -19,7 +19,8 @@ pub trait IncludeLoader {
     fn external_analysis(
         &mut self,
         _eactx: &ExternalAnalysisContext<'_>,
-    ) -> Option<ExternalAnalysis> {
+        _prev: Option<Box<dyn ExternalAnalysis>>,
+    ) -> Option<Box<dyn ExternalAnalysis>> {
         None
     }
 
@@ -58,10 +59,11 @@ impl IncludeLoaderGuard {
     pub fn external_analysis(
         &self,
         eactx: &ExternalAnalysisContext<'_>,
-    ) -> Option<ExternalAnalysis> {
+        prev: Option<Box<dyn ExternalAnalysis>>,
+    ) -> Option<Box<dyn ExternalAnalysis>> {
         let mut loader = self.inner.lock().expect("could not lock guard");
 
-        loader.external_analysis(eactx)
+        loader.external_analysis(eactx, prev)
     }
 
     pub fn set_include_paths(&mut self, include_paths: Vec<String>) {

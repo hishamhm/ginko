@@ -1,5 +1,5 @@
 use crate::dts::analysis::{Analysis, AnalysisContext, PendingReferenceList};
-use crate::dts::ast::{AbsolutePath, DtsFile, Include, Path as DtsPath, Reference, ABSOLUTE_ROOT};
+use crate::dts::ast::{ABSOLUTE_ROOT, AbsolutePath, DtsFile, Include, Path as DtsPath, Reference};
 use crate::dts::data::HasSource;
 use crate::dts::error_codes::{ErrorCode, SeverityMap};
 use crate::dts::loader::IncludeLoaderGuard;
@@ -29,6 +29,7 @@ pub struct ProjectFile {
     pub(crate) file: Option<DtsFile>,
     pub(crate) file_type: FileType,
     pub(crate) source: String,
+    pub(crate) external_analysis: Option<Box<dyn ExternalAnalysis>>,
     analysis_status: AnalysisStatus,
 }
 
@@ -50,6 +51,7 @@ impl ProjectFile {
             source,
             analysis_diagnostics: vec![],
             analysis_status: AnalysisStatus::NotAnalyzed,
+            external_analysis: None,
         }
     }
 
@@ -63,6 +65,7 @@ impl ProjectFile {
             source: "".to_string(),
             file_type: FileType::Unknown,
             analysis_status: AnalysisStatus::NotAnalyzed,
+            external_analysis: None,
         }
     }
 
@@ -76,6 +79,7 @@ impl ProjectFile {
             source,
             file_type,
             analysis_status: AnalysisStatus::NotAnalyzed,
+            external_analysis: None,
         }
     }
 
@@ -107,7 +111,7 @@ impl ProjectFile {
                     return node.reference_at(&DtsPath::Absolute(ABSOLUTE_ROOT.clone()), position);
                 }
                 super::Primary::ReferencedNode(node) if node.span.contains(position) => {
-                    return node.reference_at(position)
+                    return node.reference_at(position);
                 }
                 _ => {}
             }
@@ -139,9 +143,16 @@ pub struct ExternalAnalysisContext<'a> {
     pub text: &'a str,
 }
 
-pub struct ExternalAnalysis {
-    pub errors: Vec<ExternalDiagnostic>,
-    pub warnings: Vec<ExternalDiagnostic>,
+pub trait ExternalAnalysis: Send + Sync {
+    fn errors(&self) -> &[ExternalDiagnostic];
+    fn warnings(&self) -> &[ExternalDiagnostic];
+
+    fn valid_references_for_property(
+        &self,
+        _dts_path: &str,
+    ) -> Option<Vec<(String, Option<String>)>> {
+        None
+    }
 }
 
 #[derive(Default)]
@@ -250,6 +261,11 @@ impl Project {
     ) {
         let file_name = self.canonicalize(file_name).expect("File must be present");
 
+        let prev_external_analysis = self
+            .files
+            .get_mut(&file_name)
+            .and_then(|proj_file| proj_file.external_analysis.take());
+
         // First step: Parse file and all dependencies.
         // Dependencies are cached.
         //
@@ -260,7 +276,7 @@ impl Project {
         // `parent` values.
         self.parse_file(&file_name, &text, file_type, None, loader);
         self.analyze_tree_for(&file_name, loader);
-        self.do_external_analysis(&file_name, &text, loader);
+        self.do_external_analysis(&file_name, &text, loader, prev_external_analysis);
     }
 
     fn get_external_analysis_span(&self, file: &Path, path: &str) -> Option<(Span, Arc<Path>)> {
@@ -279,6 +295,7 @@ impl Project {
         path: &Path,
         text: &str,
         loader: &IncludeLoaderGuard,
+        prev: Option<Box<dyn ExternalAnalysis>>,
     ) -> Option<()> {
         let (root_file_path, _) = self.analysis_root_for(path)?;
         let eactx = ExternalAnalysisContext {
@@ -288,23 +305,24 @@ impl Project {
             text,
         };
 
-        let external_analysis = loader.external_analysis(&eactx)?;
+        let external_analysis = loader.external_analysis(&eactx, prev)?;
 
         let mut diagnostics = vec![];
 
         for (list, kind) in [
-            (external_analysis.errors, ErrorCode::CustomError),
-            (external_analysis.warnings, ErrorCode::CustomWarning),
+            (external_analysis.errors(), ErrorCode::CustomError),
+            (external_analysis.warnings(), ErrorCode::CustomWarning),
         ] {
             for e in list {
                 if let Some((span, source)) = self.get_external_analysis_span(path, &e.path) {
-                    diagnostics.push(Diagnostic::new(span, source, kind, e.message));
+                    diagnostics.push(Diagnostic::new(span, source, kind, e.message.clone()));
                 }
             }
         }
 
         let proj_file = self.files.get_mut(path)?;
         proj_file.analysis_diagnostics.append(&mut diagnostics);
+        proj_file.external_analysis = Some(external_analysis);
 
         Some(())
     }
@@ -656,7 +674,7 @@ mod tests {
     use crate::dts::test::Code;
     use crate::dts::tokens::TokenKind;
     use crate::dts::visitor::ReferenceContext;
-    use crate::dts::{ast, Diagnostic, HasSpan, ItemAtCursor, Project};
+    use crate::dts::{Diagnostic, HasSpan, ItemAtCursor, Project, ast};
     use assert_matches::assert_matches;
     use itertools::Itertools;
     use std::fs;
