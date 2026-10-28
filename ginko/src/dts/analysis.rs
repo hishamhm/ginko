@@ -1,18 +1,20 @@
 use itertools::Itertools;
 
 use crate::dts::ast::{
-    ABSOLUTE_ROOT, AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node,
-    NodeItem, NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue,
-    Reference, ReferencedNode, WithToken,
+    AbsolutePath, AnyDirective, Cell, DtsFile, Include, LabelRelativePath, Node, NodeItem,
+    NodeName, NodePayload, Path, Primary, Property, PropertyPath, PropertyValue, Reference,
+    ReferencedNode, WithToken, ABSOLUTE_ROOT,
 };
 use crate::dts::data::{HasSource, HasSpan, Span};
 use crate::dts::error_codes::ErrorCode;
 use crate::dts::import_guard::ImportGuard;
 use crate::dts::loader::IncludeLoaderGuard;
 use crate::dts::resolved::ResolvedTree;
+use crate::dts::tokens::IncludeKind;
 use crate::dts::visitor::ReferenceContext;
 use crate::dts::{Diagnostic, FileType, Position, Project};
-use std::collections::HashMap;
+use crate::header::{self, Define, HeaderFile, IncludeStyle, TokenKind};
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path as StdPath, PathBuf};
 use std::sync::Arc;
 
@@ -60,6 +62,7 @@ pub(crate) struct Analysis {
     import_guard: ImportGuard<PathBuf>,
     loader: IncludeLoaderGuard,
     context: AnalysisContext,
+    headers: HashMap<PathBuf, HeaderFile>,
 }
 
 impl Analysis {
@@ -76,6 +79,7 @@ impl Analysis {
             import_guard: ImportGuard::default(),
             loader: loader.clone(),
             context,
+            headers: HashMap::new(),
         }
     }
 
@@ -93,6 +97,7 @@ pub struct AnalysisContext {
     flat_nodes: HashMap<AbsolutePath, Arc<Node>>,
     includes: HashMap<String, PathBuf>,
     resolved: ResolvedTree,
+    defines: BTreeMap<String, Define>,
 }
 
 pub(crate) struct FileAnalysisResult {
@@ -107,6 +112,10 @@ impl AnalysisContext {
 
     pub fn get_labels(&self) -> Vec<String> {
         self.labels.keys().cloned().collect()
+    }
+
+    pub fn get_define(&self, name: &str) -> Option<Define> {
+        self.defines.get(name).cloned()
     }
 
     pub fn get_resolved_tree(&self) -> &ResolvedTree {
@@ -269,6 +278,10 @@ impl AnalysisContext {
             }
         }
     }
+
+    pub fn resolve_value(&self, name: &str) -> Option<String> {
+        crate::header::resolve_value_str(&self.defines, name)
+    }
 }
 
 struct FileAnalysisContext<'a> {
@@ -353,7 +366,6 @@ impl Analysis {
                     self.analyze_referenced_node(&mut ctx, referenced_node.clone());
                     ctx.first_non_include = true
                 }
-                Primary::CStyleInclude(_) => {}
             }
         }
         if !ctx.dts_header_seen && ctx.file_type == FileType::DtSource {
@@ -373,34 +385,115 @@ impl Analysis {
         parent: &DtsFile,
         include: &Include,
     ) {
-        let path = match self.loader.load(&parent.source, &include.file_name()) {
+        let path = match self
+            .loader
+            .load(&parent.source, &include.file_name(), include.kind())
+        {
             Ok(path) => path,
             Err(err) => {
                 ctx.add_diagnostic(Diagnostic::io_error(include.span(), include.source(), err));
                 return;
             }
         };
-        if let Err(err) = self
-            .import_guard
-            .add(path.clone(), &[parent.source.clone().to_path_buf()])
-        {
-            ctx.add_diagnostic(Diagnostic::cyclic_dependency_error(
-                include.span(),
-                include.source(),
-                err,
-            ));
+        if include.follow_as_dts(&path) {
+            if let Err(err) = self
+                .import_guard
+                .add(path.clone(), &[parent.source.clone().to_path_buf()])
+            {
+                ctx.add_diagnostic(Diagnostic::cyclic_dependency_error(
+                    include.span(),
+                    include.source(),
+                    err,
+                ));
+                return;
+            }
+            let Some(proj_file) = ctx.project.get_file(&path) else {
+                return;
+            };
+            if proj_file.has_errors(&ctx.project.severities) {
+                ctx.add_diagnostic(Diagnostic::new(
+                    include.span(),
+                    include.source(),
+                    ErrorCode::ErrorsInInclude,
+                    "Included file contains errors",
+                ));
+            }
+        }
+
+        if include.kind() == IncludeKind::Dts {
+            // dts-kind includes should not be followed for defines
             return;
         }
-        let Some(proj_file) = ctx.project.get_file(&path) else {
+
+        self.follow_header(
+            ctx,
+            path,
+            &mut vec![],
+            include.span(),
+            include.source().clone(),
+        );
+    }
+
+    fn follow_header(
+        &mut self,
+        ctx: &mut FileAnalysisContext<'_>,
+        path: PathBuf,
+        chain: &mut Vec<PathBuf>,
+        span: Span,
+        source: Arc<std::path::Path>,
+    ) {
+        let Ok(canonical) = std::fs::canonicalize(&path) else {
+            // TODO: add diag
             return;
         };
-        if proj_file.has_errors(&ctx.project.severities) {
-            ctx.add_diagnostic(Diagnostic::new(
-                include.span(),
-                include.source(),
-                ErrorCode::ErrorsInInclude,
-                "Included file contains errors",
-            ));
+
+        // cycle guard
+        if chain.contains(&canonical) {
+            return;
+        }
+
+        if let Some(_header) = self.headers.get(&canonical) {
+            // header already extracted, will get reused later
+        } else {
+            chain.push(canonical.clone());
+            let Ok(text) = std::fs::read_to_string(&canonical) else {
+                ctx.add_diagnostic(Diagnostic::new(
+                    span,
+                    source.clone(),
+                    ErrorCode::IOError,
+                    "failed to read header file",
+                ));
+                return;
+            };
+
+            let header = header::parse_header(&text, canonical.clone().into());
+            for include in &header.includes {
+                let kind = match include.style {
+                    IncludeStyle::Quoted => IncludeKind::CQuoted,
+                    IncludeStyle::Chevron => IncludeKind::CAngled,
+                };
+                if let Ok(path) = self.loader.load(&canonical, &include.path, kind) {
+                    self.follow_header(
+                        ctx,
+                        path,
+                        chain,
+                        include.target.span(),
+                        include.target.source().clone(),
+                    );
+                }
+                // TODO: handle load failure
+            }
+            chain.pop();
+            self.headers.insert(canonical.clone(), header);
+        }
+
+        for define in &self.headers[&canonical].defines {
+            if let TokenKind::Ident(name) = &define.name.kind {
+                self.context
+                    .defines
+                    .entry(name.clone())
+                    .or_insert(define.clone());
+            }
         }
     }
 
@@ -682,6 +775,16 @@ impl Analysis {
             Cell::Number(_, _) => {}
             Cell::Reference(reference) => self.analyze_reference(ctx, reference),
             Cell::Expression(_) => {}
+            Cell::Macro(token) => {
+                if self.context.get_define(token.item()).is_none() {
+                    ctx.add_diagnostic(Diagnostic::new(
+                        token.span(),
+                        token.source(),
+                        ErrorCode::UnknownMacro,
+                        "Unknown macro",
+                    ));
+                }
+            }
         }
     }
 
@@ -694,7 +797,10 @@ impl Analysis {
     }
 
     fn analyze_incbin(&mut self, ctx: &mut FileAnalysisContext<'_>, include: &Include, span: Span) {
-        if let Err(err) = self.loader.load(&ctx.source, &include.file_name()) {
+        if let Err(err) = self
+            .loader
+            .load(&ctx.source, &include.file_name(), include.kind())
+        {
             ctx.add_diagnostic(Diagnostic::io_error(span, include.source(), err));
         }
     }
@@ -1407,6 +1513,39 @@ labeled_referenced: &some_label {
                     ErrorCode::ExpectedU32,
                     "property should contain a single number"
                 )
+            ]
+        )
+    }
+
+    #[test]
+    pub fn c_style_include_diagnostic() {
+        let code = Code::new(
+            r#"
+/dts-v1/;
+
+#include "x.h"
+#include <x.h>
+
+/ {
+};
+"#,
+        );
+        let (diagnostics, _) = code.get_analyzed_file();
+        assert_eq_unordered!(
+            diagnostics,
+            vec![
+                Diagnostic::new(
+                    code.s1("#include \"x.h\"").span(),
+                    code.source(),
+                    ErrorCode::IOError,
+                    "file not found: x.h"
+                ),
+                Diagnostic::new(
+                    code.s1("#include <x.h>").span(),
+                    code.source(),
+                    ErrorCode::IOError,
+                    "file not found: x.h"
+                ),
             ]
         )
     }

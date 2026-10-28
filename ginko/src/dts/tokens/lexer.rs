@@ -1,15 +1,22 @@
 use crate::dts::data::{HasSource, Position};
 use crate::dts::error_codes::ErrorCode;
 use crate::dts::reader::{ByteReader, Reader};
-use crate::dts::tokens::token::{Token, TokenKind};
-use crate::dts::tokens::Reference;
+use crate::dts::tokens::token::{PreprocessorDirective, Token, TokenKind};
+use crate::dts::tokens::{IncludeKind, Reference};
 use crate::dts::Diagnostic;
 use std::path::Path;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug)]
+enum IncludeOrigin {
+    DtDirective,
+    CPreprocessor,
+}
+
 enum LexerState {
     ExpectingNodeOrPropertyName,
     Other,
+    ExpectingIncludePath(IncludeOrigin),
 }
 
 pub struct Lexer<R>
@@ -170,6 +177,73 @@ where
         }
     }
 
+    // precondition: cursor is past #
+    // #include <hello>
+    //  ^~~ cursor is here
+    fn preprocessor_or_ident(&mut self, start: Position) -> Token {
+        let word =
+            String::from_utf8(self.read_while(
+                |ch| matches!(ch, b'0'..=b'9' | b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'-'),
+            ))
+            .unwrap();
+
+        if word != "include" {
+            return Token {
+                kind: TokenKind::Ident(format!("#{word}")),
+                span: start.to(self.reader.pos()),
+                source: self.source(),
+            };
+        }
+
+        self.state = LexerState::ExpectingIncludePath(IncludeOrigin::CPreprocessor);
+
+        Token {
+            kind: TokenKind::PreprocessorDirective(PreprocessorDirective::Include),
+            span: start.to(self.reader.pos()),
+            source: self.source(),
+        }
+    }
+
+    fn include_name(&mut self, start: Position, origin: IncludeOrigin) -> Token {
+        self.state = LexerState::ExpectingNodeOrPropertyName;
+
+        let (closing, angled) = match self.reader.peek() {
+            Some(b'"') => (b'"', false),
+            Some(b'<') => (b'>', true),
+            _ => {
+                return Token {
+                    kind: TokenKind::Unknown(0),
+                    span: start.to(self.reader.pos()),
+                    source: self.source(),
+                };
+            }
+        };
+
+        self.reader.skip();
+        let path = self.read_while(|ch| ch != b'\n' && ch != closing);
+        let path = String::from_utf8(path).unwrap();
+        self.reader.skip();
+
+        let kind = match (origin, angled) {
+            (IncludeOrigin::DtDirective, false) => IncludeKind::Dts,
+            (IncludeOrigin::CPreprocessor, false) => IncludeKind::CQuoted,
+            (IncludeOrigin::CPreprocessor, true) => IncludeKind::CAngled,
+            (IncludeOrigin::DtDirective, true) => {
+                return Token {
+                    kind: TokenKind::Unknown(0),
+                    span: start.to(self.reader.pos()),
+                    source: self.source(),
+                };
+            }
+        };
+
+        return Token {
+            span: start.to(self.reader.pos()),
+            kind: TokenKind::IncludeName(super::IncludeName { path, kind }),
+            source: self.source(),
+        };
+    }
+
     // precondition: cursor is past last slash
     // // comment
     //   ^~~ cursor is here
@@ -229,6 +303,9 @@ where
             "incbin" => Incbin,
             other => Other(other.into()),
         };
+        if directive == Include {
+            self.state = LexerState::ExpectingIncludePath(IncludeOrigin::DtDirective);
+        }
         Token {
             span: pos.to(self.reader.pos()),
             kind: TokenKind::Directive(directive),
@@ -308,8 +385,11 @@ where
     fn consume(&mut self) -> Option<Token> {
         self.last_pos = self.pos();
         self.skip_whitespace();
-        let ch = self.reader.peek()?;
         let start_pos = self.reader.pos();
+        if let LexerState::ExpectingIncludePath(origin) = self.state {
+            return Some(self.include_name(start_pos, origin));
+        }
+        let ch = self.reader.peek()?;
         let source = self.source();
         let simple_token = |kind: TokenKind| -> Option<Token> {
             self.reader.skip();
@@ -321,8 +401,11 @@ where
         };
         use TokenKind::*;
         if let LexerState::ExpectingNodeOrPropertyName = self.state {
-            if matches!(ch, b'a'..=b'z' | b'A'..=b'Z' | b',' | b'.' | b'_' | b'+' | b'-' | b'#' | b'?')
-            {
+            if ch == b'#' {
+                self.reader.skip();
+                return Some(self.preprocessor_or_ident(start_pos));
+            }
+            if matches!(ch, b'a'..=b'z' | b'A'..=b'Z' | b',' | b'.' | b'_' | b'+' | b'-' | b'?') {
                 return Some(self.ident_or_label(start_pos));
             }
         }

@@ -19,6 +19,7 @@ pub enum ItemAtCursor<'a> {
     Reference(&'a Reference, ReferenceContext<'a>),
     Label(&'a WithToken<String>),
     Include(&'a Include),
+    Macro(&'a WithToken<String>),
 }
 
 impl DtsFile {
@@ -38,7 +39,6 @@ impl Primary {
             Primary::Directive(directive) => directive.item_at_cursor(cursor),
             Primary::Root(root) => root.item_at_cursor(cursor),
             Primary::ReferencedNode(node) => node.item_at_cursor(cursor),
-            Primary::CStyleInclude(_) => None,
         }
     }
 }
@@ -169,6 +169,11 @@ impl PropertyValue {
                                     reference.item(),
                                     ctx.clone(),
                                 ));
+                            }
+                        }
+                        Cell::Macro(name) => {
+                            if name.span().contains(cursor) {
+                                return Some(ItemAtCursor::Macro(name));
                             }
                         }
                     }

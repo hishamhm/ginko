@@ -68,6 +68,10 @@ impl Display for TokenKind {
             TokenKind::Ref(_) => write!(f, "reference"),
             TokenKind::Comment(_) => write!(f, "comment"),
             TokenKind::Unknown(_) => write!(f, "unknown"),
+            TokenKind::PreprocessorDirective(preprocessor_directive) => {
+                write!(f, "{preprocessor_directive}")
+            }
+            TokenKind::IncludeName(_) => write!(f, "include name"),
         }
     }
 }

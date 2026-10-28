@@ -364,8 +364,9 @@ impl Project {
     /// Find the analysis root for a given file. It will either return the file itself,
     /// or the root of the include-tree it is a part of.
     fn analysis_root_for(&self, file: &Path) -> Option<(PathBuf, &AnalysisStatus)> {
+        let canonical = self.canonicalize(file).ok()?;
         Some({
-            let mut current = file;
+            let mut current = &canonical;
             loop {
                 let proj_file = self.files.get(current)?;
                 if let Some(parent) = &proj_file.parent {
@@ -508,7 +509,7 @@ impl Project {
         path: &Path,
         position: &Position,
     ) -> Option<ResolvedContext<'a>> {
-        let project_file = self.files.get(path)?;
+        let project_file = self.get_file(path)?;
         let reference = project_file.reference_at(position)?;
 
         let ctx = self.get_analysis(path)?;
@@ -661,8 +662,18 @@ impl Project {
         loader: &mut IncludeLoaderGuard,
     ) -> Option<PathBuf> {
         let canonicalized_path = self
-            .canonicalize(loader.load(parent, &include.file_name()).ok()?)
+            .canonicalize(
+                loader
+                    .load(parent, &include.file_name(), include.kind())
+                    .ok()?,
+            )
             .ok()?;
+
+        // parse only dts-like files
+        // C headers parsed by follow_header
+        if !include.follow_as_dts(&canonicalized_path) {
+            return None;
+        }
 
         // Avoids duplicate insertion and cyclic dependencies
         if !self.files.contains_key(&canonicalized_path) {
@@ -1186,6 +1197,54 @@ mod tests {
     }
 
     #[test]
+    pub fn cpp_include_gate() {
+        let includes_dir = TempDir::new();
+        let (_, angled) = includes_dir.add_file("angled.h", "#define B_LOCAL 2");
+        let temp_dir = TempDir::new();
+        let (_, main) = temp_dir.add_file(
+            "test.dts",
+            r#"
+/dts-v1/;
+#include "frag.dtsi"
+#include "head.h"
+#include <angled.h>
+/ { prop = <A_LOCAL B_LOCAL C_LOCAL>; };
+"#,
+        );
+        let (_, frag) =
+            temp_dir.add_file("frag.dtsi", "#define C_LOCAL 3\n/ { frag_node: frag{ };};");
+        let (_, head) = temp_dir.add_file("head.h", "#define A_LOCAL 1");
+
+        let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+        loader.set_include_paths(vec![angled.parent().unwrap().display().to_string()]);
+
+        project
+            .add_file(
+                main.clone().into_os_string().into_string().unwrap(),
+                &mut loader,
+            )
+            .expect("Cannot add file");
+
+        // quoted .dtsi fragment is followed (and its own #define is collected)
+        assert!(project.get_file(&frag).is_some());
+        // headers never enter the DTS parse
+        assert!(project.get_file(&head).is_none());
+        assert!(project.get_file(&angled).is_none());
+        assert_eq!(project.files().count(), 2); // main + frag only
+        project.assert_no_diagnostics();
+
+        let analysis = project.get_analysis(&main).unwrap();
+        assert!(project
+            .get_analysis(&main)
+            .and_then(|a| a.get_node_by_label("frag_node"))
+            .is_some());
+        assert!(analysis.get_define("A_LOCAL").is_some()); // quoted .h
+        assert!(analysis.get_define("B_LOCAL").is_some()); // angled via include path
+        assert!(analysis.get_define("C_LOCAL").is_some()); // defined in the fragment itself
+    }
+
+    #[test]
     pub fn file_with_dot_relative_references() {
         let temp_dir = TempDir::new();
         let (code, file) = temp_dir.add_file(
@@ -1249,5 +1308,24 @@ mod tests {
             }
             None => panic!("References does not reference nodes"),
         }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn accept_non_canonical_paths() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new();
+        let (_, main) = temp_dir.add_file("test.dts", "/dts-v1/;\n/ { prop = <1>; };");
+        let link = main.parent().unwrap().join("link.dts");
+        symlink(&main, &link).expect("cannot create symlink");
+
+        let mut project = Project::default();
+        let mut loader = IncludeLoaderGuard::default();
+        project
+            .add_file(link.display().to_string(), &mut loader)
+            .expect("Cannot add file");
+
+        assert!(project.get_analysis(&link).is_some());
     }
 }

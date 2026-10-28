@@ -33,6 +33,7 @@ pub enum ErrorCode {
     NotAPropertyContext,
     UnexpectedSize,
     UnexpectedFormat,
+    UnknownMacro,
     CustomError,
     CustomWarning,
 }
@@ -80,6 +81,7 @@ impl Default for SeverityMap {
             | UnexpectedSize
             | UnexpectedFormat
             | DuplicateDirective
+            | UnknownMacro
             | CustomWarning => Severity::Warning
         };
         SeverityMap { inner: map }
