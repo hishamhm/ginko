@@ -1,6 +1,6 @@
 use crate::dts::analysis::{Analysis, AnalysisContext, PendingReferenceList};
 use crate::dts::ast::{
-    ABSOLUTE_ROOT, AbsolutePath, DtsFile, Include, Path as DtsPath, PropertyPath, Reference,
+    AbsolutePath, DtsFile, Include, Path as DtsPath, PropertyPath, Reference, ABSOLUTE_ROOT,
 };
 use crate::dts::data::HasSource;
 use crate::dts::error_codes::{ErrorCode, SeverityMap};
@@ -145,6 +145,13 @@ pub struct ExternalAnalysisContext<'a> {
     pub text: &'a str,
 }
 
+#[derive(Clone)]
+pub struct Snippet {
+    pub label: &'static str,
+    pub detail: Option<&'static str>,
+    pub insert_text: &'static str,
+}
+
 pub trait ExternalAnalysis: Send + Sync {
     fn errors(&self) -> &[ExternalDiagnostic];
     fn warnings(&self) -> &[ExternalDiagnostic];
@@ -153,6 +160,10 @@ pub trait ExternalAnalysis: Send + Sync {
         &self,
         _dts_path: &str,
     ) -> Option<Vec<(String, Option<String>)>> {
+        None
+    }
+
+    fn valid_snippets_for_node(&self, _dts_path: Option<String>) -> Option<Vec<Snippet>> {
         None
     }
 }
@@ -453,6 +464,20 @@ impl Project {
         None
     }
 
+    pub fn valid_snippets_for_node(
+        &self,
+        file_path: &Path,
+        npath: Option<&DtsPath>,
+    ) -> Option<Vec<Snippet>> {
+        let (root_file_path, _) = self.analysis_root_for(file_path)?;
+        let proj_file = self.files.get(&root_file_path)?;
+        if let Some(external_analysis) = &proj_file.external_analysis {
+            return external_analysis.valid_snippets_for_node(npath.map(|p| p.to_string()));
+        }
+
+        None
+    }
+
     #[cfg(test)]
     pub fn assert_no_diagnostics(&self) {
         use itertools::Itertools;
@@ -548,8 +573,7 @@ impl Project {
         let mut token = String::new();
 
         for (i, c) in line.chars().enumerate() {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '@' || c == '?' || c == '&'
-            {
+            if c.is_ascii_alphanumeric() || "_-@?&,".contains(c) {
                 token.push(c);
             } else {
                 token.clear();
@@ -703,7 +727,7 @@ mod tests {
     use crate::dts::test::Code;
     use crate::dts::tokens::TokenKind;
     use crate::dts::visitor::ReferenceContext;
-    use crate::dts::{Diagnostic, HasSpan, ItemAtCursor, Project, ast};
+    use crate::dts::{ast, Diagnostic, HasSpan, ItemAtCursor, Project};
     use assert_matches::assert_matches;
     use itertools::Itertools;
     use std::fs;

@@ -1,7 +1,7 @@
 use ginko::dts::{
     AnyDirective, FileType, HasSpan, IncludeLoader, IncludeLoaderGuard, IncludeLoaderNotifyAction,
     ItemAtCursor, Node, NodeItem, NodePayload, ParserConfig, Primary, Project, ResolvedContext,
-    ResolvedNode, Severity, SeverityMap, Span,
+    ResolvedNode, Severity, SeverityMap, Snippet, Span,
 };
 use itertools::Itertools;
 use parking_lot::RwLock;
@@ -146,7 +146,11 @@ impl LanguageServer for Backend {
             capabilities: ServerCapabilities {
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec!["&".to_string(), "/".to_string()]),
+                    trigger_characters: Some(vec![
+                        "&".to_string(),
+                        "/".to_string(),
+                        ",".to_string(),
+                    ]),
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions {
                         work_done_progress: Some(true),
@@ -271,6 +275,39 @@ impl LanguageServer for Backend {
     async fn did_close(&self, _: DidCloseTextDocumentParams) {}
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
+        fn replacement_range(params: &CompletionParams, token: &str) -> Range {
+            let end = params.text_document_position.position;
+            let start = Position {
+                line: end.line,
+                character: end.character - token.len() as u32,
+            };
+            Range { start, end }
+        }
+
+        fn completions_for_snippets(
+            range: Range,
+            snippets: Vec<Snippet>,
+            token: &str,
+        ) -> Option<CompletionResponse> {
+            Some(CompletionResponse::Array(
+                snippets
+                    .into_iter()
+                    .filter(|s| s.label.starts_with(token))
+                    .map(|s| CompletionItem {
+                        label: s.label.to_string(),
+                        detail: s.detail.map(|d| d.to_string()),
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                            range,
+                            new_text: s.insert_text.to_string(),
+                        })),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        ..Default::default()
+                    })
+                    .collect(),
+            ))
+        }
+
         fn completions_for_labels(
             labels: Vec<(String, Option<String>)>,
             token: &str,
@@ -396,9 +433,18 @@ impl LanguageServer for Backend {
         // Check if cursor is on a "node context" (e.g. inside node brackets),
         // or not (e.g. at the toplevel).
         match project.context_at(&file_path, &pos) {
-            Some(ResolvedContext::Node(rnode, _)) => {
+            Some(ResolvedContext::Node(rnode, npath)) => {
                 if let Some(token) = token.strip_prefix('&') {
                     return Ok(completions_for_reference(&project, &file_path, token));
+                }
+
+                if token.contains(',') {
+                    if let Some(snippets) =
+                        project.valid_snippets_for_node(&file_path, Some(&npath))
+                    {
+                        let range = replacement_range(&params, &token);
+                        return Ok(completions_for_snippets(range, snippets, &token));
+                    }
                 }
 
                 return Ok(completions_for_node(rnode));
