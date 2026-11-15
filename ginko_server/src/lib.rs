@@ -288,24 +288,22 @@ impl LanguageServer for Backend {
             range: Range,
             snippets: Vec<Snippet>,
             token: &str,
-        ) -> Option<CompletionResponse> {
-            Some(CompletionResponse::Array(
-                snippets
-                    .into_iter()
-                    .filter(|s| s.label.starts_with(token))
-                    .map(|s| CompletionItem {
-                        label: s.label.to_string(),
-                        detail: s.detail.map(|d| d.to_string()),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                            range,
-                            new_text: s.insert_text.to_string(),
-                        })),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
-                        ..Default::default()
-                    })
-                    .collect(),
-            ))
+        ) -> Vec<CompletionItem> {
+            snippets
+                .into_iter()
+                .filter(|s| s.label.starts_with(token))
+                .map(|s| CompletionItem {
+                    label: s.label.to_string(),
+                    detail: s.detail.map(|d| d.to_string()),
+                    kind: Some(CompletionItemKind::SNIPPET),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit {
+                        range,
+                        new_text: s.insert_text.to_string(),
+                    })),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    ..Default::default()
+                })
+                .collect()
         }
 
         fn completions_for_labels(
@@ -373,7 +371,10 @@ impl LanguageServer for Backend {
             ))
         }
 
-        fn completions_for_node(rnode: &ResolvedNode) -> Option<CompletionResponse> {
+        fn completions_for_node(
+            rnode: &ResolvedNode,
+            snippets: Option<Vec<CompletionItem>>,
+        ) -> Option<CompletionResponse> {
             let mut items = vec![];
             for name in rnode.active_child_nodes() {
                 let snippet = format!("{name} {{\n\t$0\n}};");
@@ -399,6 +400,9 @@ impl LanguageServer for Backend {
                     insert_text_format: Some(InsertTextFormat::SNIPPET),
                     ..Default::default()
                 });
+            }
+            if let Some(mut snippets) = snippets {
+                items.append(&mut snippets);
             }
             Some(CompletionResponse::Array(items))
         }
@@ -438,16 +442,20 @@ impl LanguageServer for Backend {
                     return Ok(completions_for_reference(&project, &file_path, token));
                 }
 
-                if token.contains(',') {
+                let snippets = if token.contains(',') {
                     if let Some(snippets) =
                         project.valid_snippets_for_node(&file_path, Some(&npath))
                     {
                         let range = replacement_range(&params, &token);
-                        return Ok(completions_for_snippets(range, snippets, &token));
+                        Some(completions_for_snippets(range, snippets, &token))
+                    } else {
+                        None
                     }
-                }
+                } else {
+                    None
+                };
 
-                return Ok(completions_for_node(rnode));
+                return Ok(completions_for_node(rnode, snippets));
             }
             Some(ResolvedContext::Property(_, ppath)) => {
                 if let Some(token) = token.strip_prefix('&') {
